@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/tfe-capacity/scenario.schema.json",
+  "title": "TFE Capacity Test Scenario",
+  "description": "Authoritative format for a TFE capacity/saturation test scenario. A scenario is defined entirely by this file plus secrets supplied via environment variables; no code changes are needed to define or vary a test.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["test", "tfe", "workload", "stages", "observed_config"],
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(s|m|h)?$",
+      "description": "A k6-style duration: digits with an optional s/m/h suffix (bare = seconds). Examples: \"30\", \"90s\", \"15m\", \"1h\"."
+    }
+  },
+  "properties": {
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Human-readable scenario name, recorded in results." },
+        "id_prefix": { "type": "string", "default": "k6cap", "description": "Informational label for the test family." }
+      }
+    },
+    "tfe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "organization"],
+      "properties": {
+        "address": { "type": "string", "format": "uri", "pattern": "^https://", "description": "TFE base URL (https)." },
+        "organization": { "type": "string", "minLength": 1, "description": "Existing TFE organization the test workspaces are created in." },
+        "tls_skip_verify": { "type": "boolean", "default": false, "description": "Last-resort TLS bypass. Prefer SSL_CERT_FILE with your private CA." },
+        "token_env": { "type": "string", "default": "TFE_TOKEN", "description": "Name of the env var holding the TFE API token (must be able to force-delete workspaces). The token is never stored in this file." },
+        "admin_token_env": { "type": "string", "description": "Optional env var holding a site-admin token; enables the observer's cluster-wide queue-depth sampling." }
+      }
+    },
+    "artifactory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": { "type": "string", "format": "uri", "description": "Informational Artifactory base URL." },
+        "token_env": { "type": "string", "default": "ARTIFACTORY_TOKEN", "description": "Env var holding the Artifactory bearer token for the tarball download." }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tarball_url"],
+      "properties": {
+        "config": { "type": "string", "description": "Workload profile label (e.g. state-heavy, noprov-light)." },
+        "tarball_url": { "type": "string", "format": "uri", "description": "Artifactory URL of the prebuilt Terraform config slug (.tar.gz)." },
+        "tarball_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Optional expected sha256 of the tarball; the wrapper fails if the download doesn't match." },
+        "terraform_version": { "type": "string", "description": "Terraform version to pin on the workspace (must exist in the air-gapped TFE)." },
+        "auto_apply": { "type": "boolean", "default": true, "description": "Exercise apply automatically after a successful plan." },
+        "run_variables": {
+          "type": "object",
+          "description": "Optional Terraform variables passed per run, so a scenario can tune the workload (e.g. mock_count, hold_seconds) without rebuilding the tarball. Keys/values are strings. NOTE: using these means the tarball sha256 no longer fully identifies the workload — record them (they are captured in summary.json).",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name_template": {
+          "type": "string",
+          "default": "k6cap-{test_id}-vu{vu}-{seq}",
+          "pattern": "\\{test_id\\}",
+          "description": "Workspace name template. MUST contain {test_id} (for cleanup/guard); {vu} and {seq} make each ephemeral workspace unique. Only letters, numbers, - and _ are allowed in the final name."
+        },
+        "execution_mode": { "type": "string", "enum": ["remote"], "default": "remote", "description": "Runs execute in TFE agent pods." },
+        "delete_after_run": { "type": "boolean", "default": true, "description": "Force-delete each ephemeral workspace after its run." }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["concurrency"],
+      "properties": {
+        "concurrency": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "The ladder: target execution concurrency (= k6 VUs) per stage. Include the config ceiling (TFE_CAPACITY_CONCURRENCY x replicas). The first entry is the warmup/baseline when warmup_stage is true."
+        },
+        "return_to_baseline": { "type": "integer", "minimum": 1, "description": "Optional concurrency to re-run after the ladder, to detect drift against the same-concurrency ladder stage." },
+        "dwell": { "$ref": "#/$defs/duration", "default": "15m", "description": "Steady-state hold per stage." },
+        "warmup_stage": { "type": "boolean", "default": true, "description": "Treat the first stage as warmup and exclude it from the knee calculation." },
+        "graceful_stop": { "$ref": "#/$defs/duration", "default": "5m", "description": "k6 gracefulStop per stage. Set >= one full run lifecycle so in-flight runs finish and delete their workspace instead of being cut off." },
+        "min_completions_per_stage": { "type": "integer", "minimum": 1, "default": 20, "description": "A stage with fewer measured completions is flagged as not having reached steady state." }
+      }
+    },
+    "polling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_interval": { "$ref": "#/$defs/duration", "default": "5s", "description": "How often each VU polls its run by ID." },
+        "observer_interval": { "$ref": "#/$defs/duration", "default": "5s", "description": "How often the observer samples cluster-wide queue depth." },
+        "run_deadline_factor": { "type": "number", "exclusiveMinimum": 0, "default": 3, "description": "Per-run watchdog: a run is force-timed-out after factor x expected_run_duration." },
+        "expected_run_duration": { "$ref": "#/$defs/duration", "default": "5m", "description": "Expected single-run duration; sets the watchdog deadline. Calibrate in an N=1 pilot." }
+      }
+    },
+    "abort": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failure_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.2, "description": "k6 abortOnFail: stop the stage if the run failure rate exceeds this." },
+        "any_429": { "type": "boolean", "default": true, "description": "Abort the stage on any HTTP 429 (rate-limited => results invalid)." }
+      }
+    },
+    "saturation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "throughput_gain_floor_pct": { "type": "number", "default": 10, "description": "Knee if added concurrency yields less than this % more completion throughput." },
+        "p95_run_duration_rise_pct": { "type": "number", "default": 50, "description": "Knee if p95 run duration rises more than this % over the baseline." },
+        "queue_never_drains": { "type": "boolean", "default": true, "description": "Treat a queue that never drains within a dwell (below the ceiling) as saturation." },
+        "failure_rate_pct": { "type": "number", "default": 2, "description": "Knee if the per-stage failure rate exceeds this %." },
+        "stop_on_knee": { "type": "boolean", "default": false, "description": "If true, the wrapper halts the ladder once the knee is confirmed (one stage past it)." }
+      }
+    },
+    "observed_config": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["tfe_capacity_concurrency", "terraform_enterprise_replicas"],
+      "properties": {
+        "tfe_capacity_concurrency": { "type": "integer", "minimum": 1, "description": "The TFE_CAPACITY_CONCURRENCY value in effect during the test (per pod)." },
+        "terraform_enterprise_replicas": { "type": "integer", "minimum": 1, "description": "Number of terraform-enterprise pods. ceiling = concurrency x replicas." }
+      }
+    }
+  }
+}

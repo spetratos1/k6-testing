@@ -21,7 +21,10 @@ const MODE = __ENV.MODE || 'cleanup';
 const TEST_PREFIX = __ENV.PREFIX || namePrefix(NAME_TMPL, TEST_ID);
 const BASE_PREFIX = basePrefix(NAME_TMPL);
 
-const client = new TFEClient({ address: TEST_DATA.tfe.address });
+const client = new TFEClient({
+  address: TEST_DATA.tfe.address,
+  tokenEnv: TEST_DATA.tfe.token_env,
+});
 const NONFINAL = [...QUEUED_STATES, ...EXECUTING_STATES, ...NEEDS_ACTION_STATES, 'confirmed'];
 
 export const options = { vus: 1, iterations: 1 };

@@ -36,13 +36,21 @@ const EXEC_MODE = TEST_DATA.workspace.execution_mode || 'remote';
 const DELETE_AFTER = TEST_DATA.workspace.delete_after_run !== false;
 const AUTO_APPLY = TEST_DATA.workload.auto_apply !== false;
 
+// Optional per-run Terraform variables from the scenario (object -> [{key,value}]).
+const RUN_VARS = Object.entries(TEST_DATA.workload.run_variables || {})
+  .map(([key, value]) => ({ key, value: String(value) }));
+
 const RUN_INTERVAL = parseDurationSeconds((TEST_DATA.polling || {}).run_interval || '5s');
 const OBS_INTERVAL = parseDurationSeconds((TEST_DATA.polling || {}).observer_interval || '5s');
 const DEADLINE_FACTOR = Number((TEST_DATA.polling || {}).run_deadline_factor || 3);
 const EXPECTED_RUN_S = parseDurationSeconds((TEST_DATA.polling || {}).expected_run_duration || '5m');
 const CTAG = String(CONCURRENCY);
 
-const client = new TFEClient({ address: TEST_DATA.tfe.address });
+const client = new TFEClient({
+  address: TEST_DATA.tfe.address,
+  tokenEnv: TEST_DATA.tfe.token_env,
+  adminTokenEnv: TEST_DATA.tfe.admin_token_env,
+});
 const seqByVu = {};
 
 export const options = {
@@ -98,7 +106,7 @@ export function driveRun() {
   try {
     const cv = client.createConfigurationVersion(ws.id, { autoQueueRuns: false });
     client.uploadConfiguration(cv.uploadURL, TARBALL);
-    const run = client.createRun(ws.id, cv.id, { message: `k6 ${TEST_ID} c=${CONCURRENCY}` });
+    const run = client.createRun(ws.id, cv.id, { message: `k6 ${TEST_ID} c=${CONCURRENCY}`, variables: RUN_VARS });
     M.runsCreated.add(1, { concurrency: CTAG });
     logLine({ ev: 'run_created', ws: ws.id, run: run.id, name });
 

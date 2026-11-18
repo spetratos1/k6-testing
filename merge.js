@@ -5,11 +5,14 @@
 //
 // Env: TEST_ID, TEST_DATA, CONCURRENCY_LIST, WARMUP_STAGE.
 
+import { scoreStages, detectKnee, p95Run } from './lib/knee.js';
+
 const TEST_DATA = JSON.parse(open(__ENV.TEST_DATA || './config/scenario.example.json'));
 const TEST_ID = __ENV.TEST_ID;
 const LIST = String(__ENV.CONCURRENCY_LIST || '')
   .trim().split(/\s+/).filter(Boolean).map(Number);
 const WARMUP = __ENV.WARMUP_STAGE === '1';
+const EARLY_STOP = __ENV.EARLY_STOP === '1';
 
 // Load each per-stage file (init context; skip any that are missing).
 const stages = [];
@@ -28,52 +31,13 @@ try { returnStage = JSON.parse(open(`results/${TEST_ID}/summary-stage-baseline-r
 export const options = { vus: 1, iterations: 1 };
 export default function () {}
 
-function p95Run(s) {
-  return s.durations_seconds && s.durations_seconds.run ? s.durations_seconds.run.p95 : null;
-}
-
 function analyze() {
   const oc = TEST_DATA.observed_config || {};
   const ceiling = (Number(oc.tfe_capacity_concurrency) || 0) * (Number(oc.terraform_enterprise_replicas) || 0);
-  const sat = TEST_DATA.saturation || {};
-  const gainFloor = Number(sat.throughput_gain_floor_pct != null ? sat.throughput_gain_floor_pct : 10);
-  const p95Rise = Number(sat.p95_run_duration_rise_pct != null ? sat.p95_run_duration_rise_pct : 50);
-  const failPct = Number(sat.failure_rate_pct != null ? sat.failure_rate_pct : 2);
 
-  // Order by concurrency; first non-warmup stage is the baseline.
-  const ordered = stages.slice().sort((a, b) => a.stage_concurrency - b.stage_concurrency);
-  const scored = ordered.map((s, i) => {
-    const created = s.runs.created || 0;
-    const failed = s.runs.failed || 0;
-    return Object.assign({}, s, {
-      is_warmup: WARMUP && i === 0,
-      regime: ceiling && s.stage_concurrency >= ceiling ? 'at_or_above_ceiling' : 'below_ceiling',
-      failure_rate_pct: created > 0 ? Number(((failed / created) * 100).toFixed(2)) : 0,
-    });
-  });
-
+  const scored = scoreStages(stages, { ceiling, warmup: WARMUP });
+  const { knee, signal, safe } = detectKnee(scored, TEST_DATA.saturation || {});
   const measured = scored.filter((s) => !s.is_warmup);
-  const baseline = measured[0] || null;
-  const basep95 = baseline ? p95Run(baseline) : null;
-
-  let knee = null;
-  let signal = null;
-  for (let i = 0; i < measured.length; i += 1) {
-    const s = measured[i];
-    const prev = measured[i - 1];
-
-    if (s.failure_rate_pct > failPct) { knee = s.stage_concurrency; signal = 'failures'; break; }
-
-    const sp95 = p95Run(s);
-    if (basep95 && sp95 && (sp95 - basep95) / basep95 * 100 > p95Rise) {
-      knee = s.stage_concurrency; signal = 'p95_run_duration_rise'; break;
-    }
-    if (prev && prev.throughput_completions_per_min && s.throughput_completions_per_min != null) {
-      const gain = (s.throughput_completions_per_min - prev.throughput_completions_per_min)
-        / prev.throughput_completions_per_min * 100;
-      if (gain < gainFloor) { knee = prev.stage_concurrency; signal = 'throughput_plateau'; break; }
-    }
-  }
 
   // Drift: compare the return-to-baseline stage against the same-concurrency
   // ladder stage. A slower return means something accumulated (DB/storage/pods).
@@ -89,7 +53,6 @@ function analyze() {
     };
   }
 
-  const safe = knee ? Math.max(1, Math.floor(knee * 0.8)) : (measured.length ? measured[measured.length - 1].stage_concurrency : null);
   let note = '';
   if (knee && ceiling) {
     note = knee >= ceiling
@@ -111,7 +74,7 @@ export function handleSummary() {
   const summary = {
     test_id: TEST_ID,
     schema_version: '1',
-    status: stages.length === LIST.length ? 'completed' : 'partial',
+    status: EARLY_STOP ? 'stopped_knee' : (stages.length === LIST.length ? 'completed' : 'partial'),
     generated_at: new Date().toISOString(),
     tfe: {
       address: TEST_DATA.tfe.address,

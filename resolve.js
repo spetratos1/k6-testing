@@ -22,14 +22,17 @@ function sh(v) {
 export function handleSummary() {
   const s = TEST_DATA.stages || {};
   const w = TEST_DATA.workload || {};
+  const sat = TEST_DATA.saturation || {};
   const tmpl = (TEST_DATA.workspace && TEST_DATA.workspace.name_template) || 'k6cap-{test_id}-vu{vu}-{seq}';
   const lines = [
     `CONCURRENCY_LIST="${sh((s.concurrency || []).join(' '))}"`,
     `RETURN_TO_BASELINE="${sh(s.return_to_baseline || '')}"`,
+    `STOP_ON_KNEE="${sat.stop_on_knee ? 1 : 0}"`,
     `DWELL="${sh(s.dwell || '15m')}"`,
     `GRACEFUL_STOP="${sh(s.graceful_stop || '5m')}"`,
     `WARMUP_STAGE="${s.warmup_stage ? 1 : 0}"`,
     `TARBALL_URL="${sh(w.tarball_url || '')}"`,
+    `TARBALL_SHA256="${sh(w.tarball_sha256 || '')}"`,
     `TFE_ORG="${sh(TEST_DATA.tfe.organization || '')}"`,
     `TFE_ADDRESS="${sh(TEST_DATA.tfe.address || '')}"`,
     // base prefix (before {test_id}) for the startup guard

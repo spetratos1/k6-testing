@@ -4,16 +4,23 @@
   "tfe": {
     "address": "https://tfe.example.internal",
     "organization": "platform-capacity",
-    "tls_skip_verify": false
+    "tls_skip_verify": false,
+    "token_env": "TFE_TOKEN",
+    "admin_token_env": "TFE_ADMIN_TOKEN"
   },
 
-  "artifactory": { "base_url": "https://artifactory.example.internal/tfe-loadtest" },
+  "artifactory": {
+    "base_url": "https://artifactory.example.internal/tfe-loadtest",
+    "token_env": "ARTIFACTORY_TOKEN"
+  },
 
   "workload": {
     "config": "state-heavy",
     "tarball_url": "https://artifactory.example.internal/tfe-loadtest/state-heavy-v1.tar.gz",
+    "tarball_sha256": "",
     "terraform_version": "1.9.8",
-    "auto_apply": true
+    "auto_apply": true,
+    "run_variables": {}
   },
 
   "workspace": {

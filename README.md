@@ -11,14 +11,28 @@ for the full rationale.
 run_test.sh                 bash orchestrator (resolve -> fetch -> stages -> merge -> cleanup)
 resolve.js                  scenario JSON -> sourceable env (no jq)
 stage.js                    one concurrency stage: driver + observer scenarios
+validate.js                 validates the scenario against the schema; fails fast
+evaluate.js                 per-stage knee check; writes decision.env for early-stop
 merge.js                    fold per-stage summaries -> summary.json + knee analysis
-cleanup.js                  standalone teardown / crash recovery by name prefix
+cleanup.js                  startup guard (MODE=guard) + teardown / crash recovery
 lib/tfe.js                  TFE JSON:API client (reconcile with your existing JS client)
-lib/metrics.js              k6 custom metrics (Counter/Trend only)
+lib/metrics.js              k6 custom metrics (Counter/Trend/Rate only)
+lib/knee.js                 shared saturation/knee analysis (evaluate.js + merge.js)
+lib/validate-core.js        pure scenario validator (unit-testable)
 lib/util.js                 durations, name templating, run-state groups, timestamp math
-config/scenario.example.json  test data (JSON)
-workload/state-heavy/       synthetic Terraform (null/random/time/local) -> package as .tar.gz
+config/scenario.schema.json authoritative scenario format (JSON Schema)
+config/scenario.example.json  annotated example scenario
+config/examples/            ready-made scenarios (smoke, full-ladder)
+docs/CONFIG.md              the documented configuration format (field reference)
+workload/{noprov-light,state-heavy}/  synthetic Terraform -> package as .tar.gz
 ```
+
+## Configuration
+A test is defined **entirely by one JSON scenario file** — no code changes. See
+**[docs/CONFIG.md](docs/CONFIG.md)** for the full field reference and
+**[config/scenario.schema.json](config/scenario.schema.json)** for the authoritative schema.
+Every run validates the scenario first and fails fast with field-level errors; validate by hand
+with `k6 run validate.js -e TEST_DATA=config/my-scenario.json`.
 
 ## Prerequisites
 - `k6`, `bash`, `curl`, `openssl`, `sha256sum` on the jump host / workstation.
@@ -39,6 +53,13 @@ export SSL_CERT_FILE=/etc/ssl/tfe-ca.pem   # private CA, recommended
 The wrapper runs a **startup guard** first (aborts if leftover `tfcap-*` workspaces from another
 test exist; `ALLOW_FOREIGN=1` to override), then the ladder, then a **return-to-baseline** stage
 for drift detection, then merge + cleanup.
+
+### Early-stop on knee (optional)
+Set `saturation.stop_on_knee: true` in the scenario. After each stage the wrapper runs
+`evaluate.js` (same knee math as `merge.js`, in `lib/knee.js`) and halts the ladder once the knee
+is **confirmed** — i.e. one stage past it (`throughput_plateau` confirms immediately since the knee
+is the previous stage; `failures`/`p95` signals run one more stage to confirm). `summary.json` then
+reports `status: "stopped_knee"`. Default is off (run the full ladder).
 
 ## Raise the capacity setting for the ladder
 Concurrency is capped at `TFE_CAPACITY_CONCURRENCY × replicas`. For the **saturation** ladder,

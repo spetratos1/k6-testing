@@ -1,0 +1,22 @@
+{
+  "test": { "name": "smoke-noprov", "id_prefix": "k6cap" },
+  "tfe": {
+    "address": "https://tfe.example.internal",
+    "organization": "platform-capacity",
+    "token_env": "TFE_TOKEN"
+  },
+  "workload": {
+    "config": "noprov-light",
+    "tarball_url": "https://artifactory.example.internal/tfe-loadtest/noprov-light-v1.tar.gz",
+    "auto_apply": true
+  },
+  "stages": {
+    "concurrency": [1, 2],
+    "dwell": "3m",
+    "warmup_stage": true,
+    "graceful_stop": "3m",
+    "min_completions_per_stage": 3
+  },
+  "polling": { "expected_run_duration": "1m", "run_deadline_factor": 5 },
+  "observed_config": { "tfe_capacity_concurrency": 10, "terraform_enterprise_replicas": 3 }
+}
