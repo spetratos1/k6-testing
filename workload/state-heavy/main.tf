@@ -1,90 +1,62 @@
 # workload/state-heavy/main.tf
-# Synthetic load profile — creates NO real infrastructure. Uses only the
-# hashicorp null / random / time / local providers (must be in the air-gapped
-# TFE provider mirror). Keep all variable values FIXED across concurrency stages
-# so that concurrency is the only controlled variable.
+# Synthetic, DETERMINISTIC load. Creates no real infrastructure. Variance in the
+# results must come from TFE and the infrastructure, NOT from the workload — so
+# nothing here is random or time-based except one explicit, constant hold.
 #
-# What it exercises:
-#   - time_sleep  : deterministic run duration (holds an agent pod for a known time)
-#   - random_pet  : resource-graph churn -> plan/apply CPU + larger state
-#   - local_file  : file writes + content embedded in state -> object storage + state
-#   - null_resource/local-exec (optional): CPU/disk inside the agent pod
+# CHANGED (v2 review): removed random_pet and `triggers = timestamp()` (both
+# non-deterministic and random_pet pulled in an extra provider). Now built on
+# terraform_data (BUILT-IN, no provider download) + local_file + time_sleep, and
+# a `nonce` run-variable drives changes in reuse mode instead of timestamp().
 #
-# Build + publish (example):
-#   tar -czf state-heavy-v1.tar.gz -C workload/state-heavy .
-#   curl -fSL -H "Authorization: Bearer $ARTIFACTORY_TOKEN" \
-#        -T state-heavy-v1.tar.gz \
-#        https://artifactory.example.internal/tfe-loadtest/state-heavy-v1.tar.gz
+# Providers:
+#   - terraform_data : built-in (terraform.io/builtin/terraform), NO mirror fetch.
+#     A hold-only / terraform_data-only profile isolates whether the provider
+#     mirror is the first bottleneck (see profile catalog in the design doc).
+#   - local, time    : only these two; both must exist in the air-gapped mirror.
 
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.6.0, < 2.0.0" # match the workspace's pinned version
   required_providers {
-    null   = { source = "hashicorp/null" }
-    random = { source = "hashicorp/random" }
-    time   = { source = "hashicorp/time" }
-    local  = { source = "hashicorp/local" }
+    local = { source = "hashicorp/local", version = "= 2.5.1" } # pin to your mirror
+    time  = { source = "hashicorp/time", version = "= 0.12.1" }  # pin to your mirror
   }
 }
 
-variable "resource_count" {
-  description = "Number of synthetic resources -> fakes resource-graph / state size."
-  type        = number
-  default     = 50
+variable "profile" { default = "state-heavy-v1" }
+variable "mock_count" { default = 50 } # mock VMs -> plan + state size
+variable "payload_kb" { default = 100 } # bytes per mock VM -> state + object storage
+variable "hold_seconds" { default = 30 } # constant hold -> run overlap (deterministic)
+variable "nonce" { default = "" } # set ONLY when reuseWs=true, to force changes
+
+locals {
+  ids     = toset([for i in range(var.mock_count) : format("vm-%04d", i)])
+  chunk   = join("", [for _ in range(64) : "0123456789abcde\n"]) # 1 KiB
+  payload = join("", [for _ in range(var.payload_kb) : local.chunk])
 }
 
-variable "file_count" {
-  description = "Number of local files -> fakes object-storage + state write load."
-  type        = number
-  default     = 10
+# Tier 1 — built-in, no provider download. Anchors the dependency graph.
+resource "terraform_data" "network" {
+  input = { profile = var.profile, nonce = var.nonce }
 }
 
-variable "file_bytes" {
-  description = "Size of each local file in bytes (embedded in state)."
-  type        = number
-  default     = 4096
+# Tier 2 — mock VMs: file writes + content embedded in state (object storage + Postgres).
+resource "local_file" "mock_vm" {
+  for_each = local.ids
+  filename = "${path.module}/out/${each.key}.json"
+  content = jsonencode({
+    id    = each.key
+    net   = terraform_data.network.id
+    nonce = var.nonce
+    data  = local.payload
+  })
 }
 
-variable "sleep_seconds" {
-  description = "Deterministic floor duration per run."
-  type        = number
-  default     = 30
+# Tier 3 — constant hold so N runs overlap. Deterministic duration, no timestamp().
+resource "time_sleep" "hold" {
+  count           = var.hold_seconds > 0 ? 1 : 0
+  create_duration = "${var.hold_seconds}s"
+  triggers        = { nonce = var.nonce }
+  depends_on      = [local_file.mock_vm]
 }
 
-variable "enable_local_exec" {
-  description = "Set false if provisioners are disabled in your TFE run environment."
-  type        = bool
-  default     = false
-}
-
-# 1) Deterministic duration: every run holds an agent pod for ~sleep_seconds.
-resource "time_sleep" "dwell" {
-  create_duration = "${var.sleep_seconds}s"
-}
-
-# 2) Resource-graph churn: inflates the graph and state without touching anything.
-resource "random_pet" "r" {
-  count  = var.resource_count
-  length = 3
-}
-
-# 3) State + object-storage pressure: file content is stored in Terraform state.
-resource "local_file" "f" {
-  count    = var.file_count
-  filename = "${path.module}/out/f-${count.index}.txt"
-  content  = join("", [for _ in range(floor(var.file_bytes / 16)) : "0123456789abcdef"])
-}
-
-# 4) Optional CPU/disk inside the agent pod. triggers=timestamp() forces work on
-#    every apply. Requires local-exec provisioners to be permitted.
-resource "null_resource" "work" {
-  count    = var.enable_local_exec ? var.resource_count : 0
-  triggers = { every = timestamp() }
-
-  provisioner "local-exec" {
-    command = "dd if=/dev/zero of=${path.module}/blob bs=1M count=16 >/dev/null 2>&1; sleep 1"
-  }
-}
-
-output "resource_count" {
-  value = var.resource_count
-}
+output "mock_vms" { value = length(local.ids) }

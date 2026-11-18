@@ -22,8 +22,13 @@ const TARBALL = open(__ENV.TARBALL_PATH, 'b'); // gzipped Terraform slug
 
 const TEST_ID = __ENV.TEST_ID;
 const CONCURRENCY = Number(__ENV.CONCURRENCY);
+const LABEL = __ENV.STAGE_LABEL || String(CONCURRENCY); // distinguishes e.g. baseline-return
 const DWELL = __ENV.DWELL || TEST_DATA.stages.dwell;
 const GRACEFUL = __ENV.GRACEFUL_STOP || TEST_DATA.stages.graceful_stop || '5m';
+
+const ABORT = TEST_DATA.abort || {};
+const FAIL_ABORT = Number(ABORT.failure_rate != null ? ABORT.failure_rate : 0.2);
+const ABORT_429 = ABORT.any_429 !== false; // default true
 
 const ORG = TEST_DATA.tfe.organization;
 const NAME_TMPL = TEST_DATA.workspace.name_template || 'k6cap-{test_id}-vu{vu}-{seq}';
@@ -41,8 +46,16 @@ const client = new TFEClient({ address: TEST_DATA.tfe.address });
 const seqByVu = {};
 
 export const options = {
+  // Prefer a real CA: point SSL_CERT_FILE at your private CA bundle. Only set
+  // tls_skip_verify in the scenario as a last resort.
   insecureSkipTLSVerify: TEST_DATA.tfe.tls_skip_verify === true,
-  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(95)', 'p(99)'],
+  // p99 dropped (v2 review): ~tens-to-low-hundreds of runs per stage, so p99 is noise.
+  summaryTrendStats: ['min', 'med', 'p(90)', 'p(95)', 'max', 'count'],
+  // Hard safety stops. delayAbortEval lets a stage warm up before the rate is judged.
+  thresholds: {
+    tfe_test_run_failed: [{ threshold: `rate<=${FAIL_ABORT}`, abortOnFail: true, delayAbortEval: '1m' }],
+    tfe_test_api_429: [{ threshold: 'count==0', abortOnFail: ABORT_429 }],
+  },
   scenarios: {
     driver: {
       executor: 'constant-vus',
@@ -113,12 +126,17 @@ export function driveRun() {
     if (d.apply != null) M.applyDur.add(d.apply, tags);
     if (d.run != null) M.runDur.add(d.run, tags);
 
-    if (isCompleted(finalStatus)) {
+    const ok = isCompleted(finalStatus);
+    const hasChanges = r.attributes && r.attributes['has-changes'];
+    M.runFailedRate.add(!ok, { concurrency: CTAG }); // drives the failure-rate abort
+    if (ok) {
       M.runsCompleted.add(1, tags);
     } else {
       M.runsFailed.add(1, Object.assign({ reason: finalStatus }, tags));
     }
-    logLine({ ev: 'run_done', ws: ws.id, run: run.id, status: finalStatus, durations: d });
+    // has-changes=false => the run ended planned_and_finished and skipped apply;
+    // a validity signal that the workload actually exercised apply.
+    logLine({ ev: 'run_done', ws: ws.id, run: run.id, status: finalStatus, has_changes: hasChanges, durations: d });
   } catch (e) {
     M.runsFailed.add(1, { reason: 'lifecycle_error', concurrency: CTAG });
     logLine({ ev: 'lifecycle_error', ws: ws && ws.id, err: String(e) });
@@ -144,7 +162,8 @@ export function observe() {
 function trend(m, name) {
   const v = m[name] && m[name].values;
   if (!v) return null;
-  return { avg: v.avg, med: v.med, p95: v['p(95)'], p99: v['p(99)'], min: v.min, max: v.max };
+  // p50=med, p90, p95, max (no p99 — too few samples per stage to be meaningful).
+  return { n: v.count, p50: v.med, p90: v['p(90)'], p95: v['p(95)'], min: v.min, max: v.max };
 }
 function count(m, name) {
   return (m[name] && m[name].values && m[name].values.count) || 0;
@@ -155,6 +174,7 @@ export function handleSummary(data) {
   const dwellMin = parseDurationSeconds(DWELL) / 60;
   const completed = count(m, 'tfe_test_runs_completed_total');
   const stage = {
+    stage_label: LABEL,
     stage_concurrency: CONCURRENCY,
     dwell: DWELL,
     generated_at: new Date().toISOString(),
@@ -175,7 +195,7 @@ export function handleSummary(data) {
     executing_depth: trend(m, 'tfe_test_executing_depth'),
   };
   const out = {};
-  out[`results/${TEST_ID}/summary-stage-${CONCURRENCY}.json`] = JSON.stringify(stage, null, 2);
-  out.stdout = `stage c=${CONCURRENCY}: created=${stage.runs.created} completed=${completed} failed=${stage.runs.failed}\n`;
+  out[`results/${TEST_ID}/summary-stage-${LABEL}.json`] = JSON.stringify(stage, null, 2);
+  out.stdout = `stage ${LABEL} (c=${CONCURRENCY}): created=${stage.runs.created} completed=${completed} failed=${stage.runs.failed}\n`;
   return out;
 }

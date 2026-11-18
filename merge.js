@@ -21,6 +21,10 @@ for (const c of LIST) {
   }
 }
 
+// Optional return-to-baseline stage (drift detection).
+let returnStage = null;
+try { returnStage = JSON.parse(open(`results/${TEST_ID}/summary-stage-baseline-return.json`)); } catch (_) { returnStage = null; }
+
 export const options = { vus: 1, iterations: 1 };
 export default function () {}
 
@@ -71,6 +75,20 @@ function analyze() {
     }
   }
 
+  // Drift: compare the return-to-baseline stage against the same-concurrency
+  // ladder stage. A slower return means something accumulated (DB/storage/pods).
+  let drift = null;
+  if (returnStage) {
+    const match = measured.find((s) => s.stage_concurrency === returnStage.stage_concurrency);
+    const a = match ? p95Run(match) : null;
+    const b = p95Run(returnStage);
+    drift = {
+      concurrency: returnStage.stage_concurrency,
+      initial_p95: a, return_p95: b,
+      pct_change: (a && b) ? Number(((b - a) / a * 100).toFixed(1)) : null,
+    };
+  }
+
   const safe = knee ? Math.max(1, Math.floor(knee * 0.8)) : (measured.length ? measured[measured.length - 1].stage_concurrency : null);
   let note = '';
   if (knee && ceiling) {
@@ -79,10 +97,11 @@ function analyze() {
       : `Knee below config ceiling (${ceiling}) => infrastructure-limited; correlate the stage window with Grafana to find the resource.`;
   }
 
-  return { ceiling, scored, result: {
+  return { ceiling, scored, drift, result: {
     knee_concurrency: knee,
     limiting_signal: signal,
     safe_operating_concurrency: safe,
+    baseline_drift: drift,
     notes: note,
   } };
 }
@@ -101,6 +120,7 @@ export function handleSummary() {
     observed_config: Object.assign({}, TEST_DATA.observed_config, { config_ceiling: a.ceiling }),
     workload: TEST_DATA.workload,
     stages: a.scored,
+    return_to_baseline: returnStage,
     result: a.result,
   };
   const out = {};

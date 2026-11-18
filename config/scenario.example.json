@@ -23,12 +23,15 @@
   },
 
   "stages": {
-    "concurrency": [5, 10, 15, 20, 25, 30],
+    "concurrency": [1, 5, 10, 15, 20, 25, 30],
+    "return_to_baseline": 5,
     "dwell": "15m",
     "warmup_stage": true,
     "graceful_stop": "5m",
     "min_completions_per_stage": 20
   },
+
+  "abort": { "failure_rate": 0.2, "any_429": true },
 
   "polling": {
     "run_interval": "5s",
@@ -47,6 +50,7 @@
 
   "observed_config": {
     "tfe_capacity_concurrency": 10,
-    "terraform_enterprise_replicas": 3
+    "terraform_enterprise_replicas": 3,
+    "_note": "For the SATURATION ladder, raise TFE_CAPACITY_CONCURRENCY so the ceiling (concurrency x replicas) is >= the top stage; otherwise queueing above the ceiling is forced by configuration, not resources. Record the real production setting and run one separate confirmation at it."
   }
 }
