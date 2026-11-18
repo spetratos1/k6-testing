@@ -1,0 +1,52 @@
+{
+  "test": { "name": "tfe-saturation-baseline", "id_prefix": "k6cap" },
+
+  "tfe": {
+    "address": "https://tfe.example.internal",
+    "organization": "platform-capacity",
+    "tls_skip_verify": false
+  },
+
+  "artifactory": { "base_url": "https://artifactory.example.internal/tfe-loadtest" },
+
+  "workload": {
+    "config": "state-heavy",
+    "tarball_url": "https://artifactory.example.internal/tfe-loadtest/state-heavy-v1.tar.gz",
+    "terraform_version": "1.9.8",
+    "auto_apply": true
+  },
+
+  "workspace": {
+    "name_template": "k6cap-{test_id}-vu{vu}-{seq}",
+    "execution_mode": "remote",
+    "delete_after_run": true
+  },
+
+  "stages": {
+    "concurrency": [5, 10, 15, 20, 25, 30],
+    "dwell": "15m",
+    "warmup_stage": true,
+    "graceful_stop": "5m",
+    "min_completions_per_stage": 20
+  },
+
+  "polling": {
+    "run_interval": "5s",
+    "observer_interval": "5s",
+    "run_deadline_factor": 3,
+    "expected_run_duration": "5m"
+  },
+
+  "saturation": {
+    "throughput_gain_floor_pct": 10,
+    "p95_run_duration_rise_pct": 50,
+    "queue_never_drains": true,
+    "failure_rate_pct": 2,
+    "stop_on_knee": false
+  },
+
+  "observed_config": {
+    "tfe_capacity_concurrency": 10,
+    "terraform_enterprise_replicas": 3
+  }
+}
