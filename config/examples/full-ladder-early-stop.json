@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "test": { "name": "full-ladder-early-stop", "id_prefix": "k6cap" },
   "tfe": {
     "address": "https://tfe.example.internal",

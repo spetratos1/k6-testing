@@ -119,4 +119,10 @@ k6 run merge.js \
   >>"$LOG" 2>&1
 
 echo "done -> ${RESULTS}/summary.json"
+
+# 7) Retention: gzip raw files, enforce keep-days / max-tests (docs/RESULTS.md §6.1).
+if [ -x tools/prune-results.sh ]; then
+  tools/prune-results.sh results \
+    --keep-raw-days "${KEEP_RAW_DAYS:-14}" --max-local-tests "${MAX_LOCAL_TESTS:-50}" >>"$LOG" 2>&1 || true
+fi
 # cleanup runs via the EXIT trap

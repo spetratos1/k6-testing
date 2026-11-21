@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "test": { "name": "tfe-saturation-baseline", "id_prefix": "k6cap" },
 
   "tfe": {

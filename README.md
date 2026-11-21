@@ -23,7 +23,10 @@ lib/util.js                 durations, name templating, run-state groups, timest
 config/scenario.schema.json authoritative scenario format (JSON Schema)
 config/scenario.example.json  annotated example scenario
 config/examples/            ready-made scenarios (smoke, full-ladder)
-docs/CONFIG.md              the documented configuration format (field reference)
+docs/CONFIG.md              the configuration format (design + field reference)
+docs/RESULTS.md             test results + retention strategy (outputs, files, Grafana, retention)
+tools/validate-scenario.mjs Node-only scenario check (validate + print the plan)
+tools/prune-results.sh      enforce the local results retention policy
 workload/{noprov-light,state-heavy}/  synthetic Terraform -> package as .tar.gz
 ```
 
@@ -31,8 +34,11 @@ workload/{noprov-light,state-heavy}/  synthetic Terraform -> package as .tar.gz
 A test is defined **entirely by one JSON scenario file** — no code changes. See
 **[docs/CONFIG.md](docs/CONFIG.md)** for the full field reference and
 **[config/scenario.schema.json](config/scenario.schema.json)** for the authoritative schema.
-Every run validates the scenario first and fails fast with field-level errors; validate by hand
-with `k6 run validate.js -e TEST_DATA=config/my-scenario.json`.
+Every run validates the scenario first and fails fast with field-level errors. Validate by hand:
+```
+node tools/validate-scenario.mjs config/my-scenario.json   # Node only, no k6/TFE; prints the plan
+k6 run validate.js -e TEST_DATA=config/my-scenario.json    # same checks k6 runs at startup
+```
 
 ## Prerequisites
 - `k6`, `bash`, `curl`, `openssl`, `sha256sum` on the jump host / workstation.
