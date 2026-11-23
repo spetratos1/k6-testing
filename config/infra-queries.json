@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "_comment": "Operator-owned. PromQL is specific to your cluster's exporters, so fill in expr for your stack. resource groups the table and names the bottleneck; breach_above makes a query eligible to be named first_bottleneck. The harness ships no metric names of its own.",
+  "queries": [
+    { "id": "tfe_pod_cpu",      "resource": "cpu",          "title": "terraform-enterprise pods CPU (cores)", "expr": "<PromQL>", "unit": "cores", "breach_above": 6.0 },
+    { "id": "node_cpu_pct",     "resource": "cpu",          "title": "worker node CPU %",                     "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 },
+    { "id": "node_mem_pct",     "resource": "memory",       "title": "worker node memory %",                  "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.90 },
+    { "id": "agent_pods_pending","resource": "other",       "title": "agent pods Pending",                    "expr": "<PromQL>", "unit": "count", "breach_above": 0 },
+    { "id": "pg_cpu_pct",       "resource": "postgres",     "title": "Postgres CPU %",                        "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 },
+    { "id": "pg_conn_ratio",    "resource": "postgres",     "title": "Postgres connections / max",            "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 },
+    { "id": "object_store_p99", "resource": "object_store", "title": "object storage p99 latency (ms)",        "expr": "<PromQL>", "unit": "ms",    "breach_above": 250 },
+    { "id": "redis_mem_pct",    "resource": "redis",        "title": "Redis memory %",                        "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.90 }
+  ]
+}

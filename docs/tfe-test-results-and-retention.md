@@ -2,41 +2,150 @@
 
 Status: design, version 1. This replaces sections 10 and 11 of `tfe-capacity-test-design.md`; where
 they disagree, this document is correct. Tags: **[F]** documented fact, **[R]** recommendation,
-**[V]** to confirm in the pilot.
+**[V]** to confirm against your Grafana/TFE in the pilot.
+
+The harness that produces these results is still being built. This document defines the output, the
+files, how they are generated, and how long they are kept, and it names the pieces of the harness
+that have to exist to do that — it does not assume any particular script is already written. The one
+thing that was actually tried, because the whole infrastructure story depends on it, is the Grafana
+access; that spike is Section 1.
 
 One earlier constraint is reversed here, with your confirmation: the jump host may call the Grafana
 HTTP API. Prometheus, the Kubernetes API, and the nodes stay out of scope — Prometheus is reached only
-as a Grafana data source, and every Grafana call is outbound and authenticated.
+through a Grafana data source, and every Grafana call is outbound and authenticated.
 
-## Decisions
+## 1. Grafana access: the spike
 
-1. One folder per test, `results/<test-id>/`, self-contained. It holds the answer, the evidence
-   behind the answer, and the scenario and environment needed to read it later.
-2. `summary.json` is the result. `report.md` is the same thing written for a person. If you only read
-   one file, read `report.md`; if a tool reads one file, it reads `summary.json`. Nothing else is
-   needed to get the answer.
-3. Infrastructure evidence is pulled from Grafana straight into the folder (`infra.json`) as soon as
-   the ladder finishes. Those numbers then outlive Prometheus retention, and the "what saturated
-   first" question is answered from the folder rather than from a live dashboard weeks later.
-4. Grafana does exactly two things: it answers metric queries and it receives annotations. The test
-   never waits on it and never fails because of it. If the token is missing, the API is unreachable,
-   or a query errors, the result is still produced and records why the infra section is thin.
-5. The result is assembled by a re-runnable step after the load is over. Nothing about generating
-   results, talking to Grafana, or writing files happens while runs are in flight, so a slow or
-   broken Grafana never perturbs a measurement.
-6. Retention is set by file class, in its own policy file, not per scenario. Small decision-grade
-   files are kept indefinitely; per-run records for 180 days; bulky raw output for 30. A reference
-   test can be pinned so pruning never touches it.
+Before relying on Grafana for the "what saturated first" answer, we proved three things from the jump
+host: you can get a token, you can read a metric with it, and you can write a time-range annotation.
+The steps below are what the report step automates later. Commands assume `GRAFANA` holds the base
+URL and `GRAFANA_TOKEN` holds the token.
 
-One thing we do *not* copy from the single-run design this document was compared against: there is no
-`setup`-done marker and no stage-offset arithmetic. Because each concurrency stage is its own
-`k6 run`, the wrapper already knows every stage's exact wall-clock window. Those windows are what the
-Grafana queries and annotations use, so they are precise by construction rather than reconstructed
-from logs.
+### 1.1 Get a token
 
-## What the results answer
+Create a **service account** and a token for it, rather than a personal API key. In the UI:
+Administration → Users and access → Service accounts → Add service account, then Add service account
+token. The same by API:
 
-The test exists to answer five questions, and each has a home in the output.
+```bash
+# create the service account (needs an admin token once, to bootstrap)
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$GRAFANA/api/serviceaccounts" \
+  -d '{"name":"tfe-captest","role":"Viewer"}'
+# -> {"id": 42, ...}
+
+# mint a token for it
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$GRAFANA/api/serviceaccounts/42/tokens" \
+  -d '{"name":"tfe-captest-token"}'
+# -> {"key":"glsa_..."}   # this is GRAFANA_TOKEN
+```
+
+[R] Least privilege: `Viewer` is enough to **query** a data source through the proxy. **Creating
+annotations** needs more — either the `Editor` role, or (better) a custom role granting
+`annotations:create` and nothing else. Give the account read on the one data source you query and
+annotation-create, and no dashboards-edit. [V] Confirm the exact role/permission on your Grafana;
+RBAC for annotations varies by version and edition.
+
+### 1.2 Identify the metric and the data source
+
+A metric is identified by two things: the data source `uid` and the PromQL expression. The easiest way
+to get both is from the panel that already shows what you care about. Open the dashboard, pick the
+panel (say "Postgres connections"), then its menu → Inspect → Panel JSON, and read the `datasource.uid`
+and the `expr` out of `targets`. (Query inspector → "Query" shows the same expression.) You can also
+list data sources and their uids directly:
+
+```bash
+curl -s -H "Authorization: Bearer $GRAFANA_TOKEN" "$GRAFANA/api/datasources" \
+  | python3 -c 'import sys,json;[print(d["uid"],d["type"],d["name"]) for d in json.load(sys.stdin)]'
+```
+
+Record each `{uid, expr}` you want into `config/infra-queries.json` (Section 4). The harness ships no
+metric names of its own, because they are specific to your exporters.
+
+### 1.3 Read a metric
+
+Query through the **data source proxy**, which passes straight to Prometheus and returns native
+Prometheus JSON. `DS_UID` is the data source uid; `START`/`END` are Unix seconds spanning a stage's
+measure window; `STEP` is seconds.
+
+```bash
+curl -s -G -H "Authorization: Bearer $GRAFANA_TOKEN" \
+  "$GRAFANA/api/datasources/proxy/uid/$DS_UID/api/v1/query_range" \
+  --data-urlencode 'query=sum(pg_stat_activity_count) / max(pg_settings_max_connections)' \
+  --data-urlencode "start=$START" \
+  --data-urlencode "end=$END" \
+  --data-urlencode "step=$STEP"
+# -> {"status":"success","data":{"resultType":"matrix",
+#     "result":[{"metric":{...},"values":[[1700000000,"0.62"],[1700000015,"0.66"], ...]}]}}
+```
+
+The report step runs one of these per stage per query and reduces each series' values to `avg`, `p95`,
+and `max` over the window. (The unified `POST /api/ds/query` endpoint also works and can batch several
+queries in one call, but its Prometheus body fields are less clearly documented; the proxy
+`query_range` is the simpler, well-specified path, so it is the one we build on. [V] confirm the proxy
+path on your version.)
+
+### 1.4 Write a time-range annotation
+
+Post an **organization annotation** (no `dashboardUID`) with tags. A region is created by including
+both `time` and `timeEnd`, both in **epoch milliseconds**.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $GRAFANA_TOKEN" -H "Content-Type: application/json" \
+  "$GRAFANA/api/annotations" -d '{
+    "time":    1700000000000,
+    "timeEnd": 1700000900000,
+    "tags":    ["tfcap", "tfcap:'"$TEST_ID"'", "tfcap:stage:c15"],
+    "text":    "tfcap '"$TEST_ID"' stage c15 measure window"
+  }'
+# -> {"id": 4412, "message": "Annotation added"}
+```
+
+Where it shows up: an organization annotation is not tied to a dashboard, so it appears on any
+dashboard that has an annotation query filtering on the tag. Add that once per dashboard (dashboard
+Settings → Annotations → add a "Grafana" annotation query with `Filter by: Tags = tfcap`), and every
+test's regions light up on it without the harness knowing the dashboard. To pin a marker to one
+dashboard instead, include its `dashboardUID` (and optionally `panelId`).
+
+### 1.5 Find and remove them later
+
+```bash
+curl -s -G -H "Authorization: Bearer $GRAFANA_TOKEN" "$GRAFANA/api/annotations" \
+  --data-urlencode "tags=tfcap:$TEST_ID"                 # list a test's annotations
+curl -s -X DELETE -H "Authorization: Bearer $GRAFANA_TOKEN" "$GRAFANA/api/annotations/4412"
+```
+
+Annotations live in the Grafana database, tagged with the test id, so they are cheap to keep and easy
+to find or delete by test. [V] Grafana 13 is migrating `/api` to `/apis`; the legacy `/api/annotations`
+and `/api/datasources/proxy` paths used here still work, but keep the paths in one place so a version
+bump is a one-line change.
+
+## 2. Decisions
+
+1. One folder per test, `results/<test-id>/`, self-contained: the answer, the evidence, and the
+   scenario and environment needed to read it later.
+2. `summary.json` is the result; `report.md` is the same thing written for a person. A person reads
+   `report.md`; a tool reads `summary.json`. Nothing else is needed to get the answer.
+3. Infrastructure evidence is pulled from Grafana into the folder (`infra.json`) as soon as the ladder
+   finishes, so the numbers outlive Prometheus retention and "what saturated first" is answered from
+   the folder, not from a live dashboard weeks later.
+4. Grafana is used for exactly two things, both shown in Section 1: reading metrics and writing
+   annotations. The test never waits on it and never fails because of it. No token, unreachable API,
+   or failed query leaves you without a result — the infra section just records why it is thin.
+5. Grafana is touched only after the load is over. Nothing talks to it while runs are in flight, so a
+   slow query or a flaky endpoint can never perturb a measurement.
+6. Retention is by file class, in its own policy file, not per scenario. Small decision-grade files
+   are kept indefinitely; per-run records for 180 days; bulky raw output for 30. A reference test can
+   be pinned so pruning never touches it.
+
+We do not reconstruct stage windows from a setup marker and offsets, the way a single-run ladder would
+have to. Because each concurrency stage is its own k6 run, the harness records every stage's exact
+wall-clock window directly, and those windows are what the Grafana queries and annotations use.
+
+## 3. What the results answer
+
+Five questions, each with a home in the output.
 
 | Question | Answered by |
 |---|---|
@@ -46,17 +155,16 @@ The test exists to answer five questions, and each has a home in the output.
 | When does queueing start? | per stage: `durations_seconds.plan_queue` / `apply_queue`, `queue_depth` |
 | What saturates first? | `infra.first_bottleneck` and the per-stage resource numbers in `infra.json` |
 
-A few rules hold for every number we report. Percentiles always travel with their sample count `n`,
-and a stage with fewer than `min_completions_per_stage` measured runs is marked invalid rather than
-quietly averaged. Phase durations come from TFE's `status-timestamps`, not from our poll loop, so poll
-granularity and clock skew between the jump host and TFE never leak into them. A `timed_out` run is
-counted and shown but kept out of the duration percentiles, because its real duration is unknown and
-it would otherwise pin everything at `max_run_wait`. Warmup is excluded from the measured window. We
-do not report p99 for a stage with fewer than 100 samples. And the bottleneck call is a heuristic,
-not a proof: `first_bottleneck` points at the resource whose configured threshold was crossed at the
-lowest stage at or before the knee, and the evidence to check it is in `infra.json`.
+Rules that hold for every number. Percentiles always carry their sample count `n`, and a stage with
+fewer than `min_completions_per_stage` measured runs is marked invalid rather than quietly averaged.
+Phase durations come from TFE's `status-timestamps`, not our poll loop, so poll granularity and
+jump-host/TFE clock skew never leak into them. A `timed_out` run is counted and shown but kept out of
+the duration percentiles. Warmup is excluded from the measured window. No p99 for a stage under 100
+samples. The bottleneck call is a heuristic, not a proof: `first_bottleneck` names the resource whose
+configured `breach_above` threshold was crossed at the lowest stage at or before the knee, and the
+evidence to check it is in `infra.json`.
 
-## Files produced
+## 4. Files produced
 
 ```
 results/
@@ -74,38 +182,22 @@ results/
     runs.jsonl                     one record per run                      medium
     runs.csv                       same, for spreadsheets                  medium
     test.log                       per-run log lines from each stage       short
-    metrics-stage-<label>.ndjson   k6 raw samples (optional, --out json)   short
+    metrics-stage-<label>.ndjson   k6 raw samples (optional)               short
 ```
 
-Test id is `YYYYMMDD-HHMMSS-<4hex>`, and it shows up in the folder name, the workspace names, the
-annotation tags, and the `index.csv` row, so any artifact can be traced back to its run.
+Test id is `YYYYMMDD-HHMMSS-<4hex>` and appears in the folder name, the workspace names, the annotation
+tags, and the `index.csv` row, so any artifact traces back to its run.
 
-| File | Written by | When | Notes |
-|---|---|---|---|
-| `meta.json` | wrapper | start, finished at end | start/end wall-clock, host, k6 version, workload URL + sha256, measured Grafana clock skew |
-| `scenario.effective.json` | wrapper | start | exactly what ran; env-var names only, no secrets |
-| `summary-stage-<label>.json` | `stage.js` `handleSummary` | end of each stage | that stage's percentiles, throughput, queue depth, counts |
-| `test.log` | `stage.js` (`console.log`, redirected) | during each stage | one JSON line per finished run |
-| `metrics-stage-<label>.ndjson` | k6 `--out json` | during | opt-in; large, includes built-in HTTP metrics |
-| `cleanup.json` | `cleanup.js` | after the ladder, always | workspaces found, canceled, deleted, orphaned |
-| `runs.jsonl` / `runs.csv` | report step | after cleanup | parsed from `test.log` |
-| `infra.json` | report step | after cleanup | Grafana queries per stage window |
-| `annotations.json` | report step | after infra | annotation ids and times |
-| `summary.json` / `report.md` | report step | last | merge of everything |
-| `manifest.json` / `index.csv` | wrapper (shell) | last | sha256 of each file; one appended CSV row |
-
-The per-run record in `runs.jsonl` is the thing that lets anyone recompute a statistic without k6 or
-Grafana:
+The per-run record in `runs.jsonl` is what lets anyone recompute a statistic without k6 or Grafana:
 
 ```json
-{"stage":"c15","vu":7,"seq":12,"workspace":"k6cap-20261120-205300-ab-vu7-12",
+{"stage":"c15","vu":7,"seq":12,"workspace":"k6cap-20261123-140800-ab-vu7-12",
  "run_id":"run-AbC...","outcome":"applied","created_at":"...","finished_at":"...",
  "plan_queue_sec":2.1,"plan_sec":9.8,"apply_queue_sec":1.9,"apply_sec":31.2,"run_sec":46.0,
  "timed_out":false,"has_changes":true}
 ```
 
-`summary.json` keeps the shape from design doc §11 and adds `warnings`, `infra`, `grafana`, and
-`files`:
+`summary.json` keeps the shape from design doc §11 and adds `warnings`, `infra`, `grafana`, `files`:
 
 ```json
 {
@@ -113,7 +205,6 @@ Grafana:
   "warnings": ["grafana clock skew 2.4s exceeds 2s"],
   "infra": {
     "status": "ok",
-    "reason": null,
     "source": { "grafana": "https://grafana.example.internal", "datasource_uid": "prom", "queries_sha256": "..." },
     "clock_skew_ms": 2400,
     "first_bottleneck": { "resource": "postgres", "query": "pg_conn_ratio", "stage": "c25", "value": 0.92, "threshold": 0.85 },
@@ -124,130 +215,100 @@ Grafana:
 }
 ```
 
-`infra.per_stage` is the compact view — one number per resource per stage. The full per-series
-statistics live in `infra.json`. `infra.status` is `partial` when some queries failed (the failures
-are listed in `infra.json`), `unavailable` when Grafana could not be reached, and `disabled` when the
-scenario did not turn it on.
+`infra.status` is `ok`, `partial` (some queries failed — listed in `infra.json`), `unavailable`
+(Grafana could not be reached), or `disabled` (not turned on). `report.md` renders the same content in
+a fixed order — verdict, warnings, per-stage table, per-stage resource table, cleanup, file list — and
+carries nothing that is not in `summary.json`. `index.csv` is append-only: `test_id, started_at,
+status, scenario, profile, terraform_version, tfe_version, max_concurrency, knee_concurrency,
+safe_concurrency, first_bottleneck, invalid_stages, pinned, path`.
 
-`report.md` has a fixed order and carries nothing that is not already in `summary.json`: the verdict
-(status, knee, safe concurrency, regime), then warnings, then a per-stage table (runs, throughput,
-p50/p90/p95/max of queue wait and run duration with `n`, failures), then the per-stage resource table
-from `infra.json`, then the cleanup outcome and the file list.
+## 5. What the harness needs to produce this
 
-`index.csv` is append-only, one row per test, and is all you need to compare runs over time:
-`test_id, started_at, status, scenario, profile, terraform_version, tfe_version, max_concurrency,
-knee_concurrency, safe_concurrency, first_bottleneck, invalid_stages, pinned, path`.
+The results are a function of the test folder, generated by the pieces below. Some already exist as
+scaffolding from earlier work; the report step and the Grafana client are the main things still to
+build. The design depends on the **responsibilities**, not on these names.
 
-## How results are generated
+| Piece | Responsibility | Reads | Writes | State |
+|---|---|---|---|---|
+| Wrapper | orders the run; records each stage's exact wall-clock window; checks Grafana clock skew once at start; at the end writes `manifest.json` and the `index.csv` row; sets `umask 027` | scenario, `retention.json` | `meta.json`, `manifest.json`, `index.csv` | scaffolded |
+| Validator | reject a malformed scenario before anything runs | scenario, schema | `validation.json` | built |
+| Load step (one run per stage) | hold C concurrent run lifecycles for the dwell; emit k6 metrics; log one line per finished run | scenario, workload tarball | `summary-stage-<label>.json`, `test.log` lines | scaffolded |
+| Knee check | after each stage, decide whether the knee is confirmed (early stop) | stage summaries | early-stop signal | scaffolded |
+| Cleanup step | force-delete the test's workspaces; report leftovers | TFE API | `cleanup.json` | scaffolded |
+| **Report step** | **to build.** Read the folder; pull infra per stage window and post annotations from the recorded windows (Section 1); parse `test.log` into `runs.jsonl`/`runs.csv`; merge everything into `summary.json` and render `report.md` | folder, `infra-queries.json`, Grafana | `runs.jsonl`, `runs.csv`, `infra.json`, `annotations.json`, `summary.json`, `report.md` | **not built** |
+| Prune | enforce `retention.json` | `retention.json`, `results/` | deletes / compresses | built |
+
+The order they run in:
 
 ```
-run_test.sh
-  validate -> resolve -> guard -> fetch+hash workload (meta.json start)
-  for each stage C (and the return-to-baseline stage):
-      k6 run stage.js      -> summary-stage-<C>.json, test.log lines
-      k6 run evaluate.js   -> decision.env (knee; early stop if configured)
-      record the stage's exact wall-clock window
-  k6 run cleanup.js        -> cleanup.json      (always, even after a kill)
-  finish meta.json (end, k6 exit codes)
-  REPORT STEP (re-runnable):
-      k6 run report.js
-        reads   summary-stage-*.json, test.log, meta.json, cleanup.json,
-                scenario.effective.json, the recorded stage windows, infra-queries.json
-        calls   Grafana: /api/ds/query per stage window, then annotations
-        writes  runs.jsonl, runs.csv, infra.json, annotations.json, summary.json, report.md
-  shell: manifest.json (sha256 of each file), append index.csv, chmod 0750
+validate scenario
+for each stage (and the return-to-baseline stage):
+    load step   -> summary-stage-<label>.json, test.log lines
+    knee check  -> early-stop decision
+    wrapper records the stage's start/end window
+cleanup step    -> cleanup.json        (always, even after a kill)
+report step     -> runs.jsonl, runs.csv, infra.json, annotations.json, summary.json, report.md
+wrapper         -> manifest.json, append index.csv
 ```
 
-The load path and the reporting path are separate on purpose. During the ladder the only external
-calls are to TFE; Grafana is touched only afterward, by the report step. That keeps a slow query or a
-flaky annotation endpoint off the measurement, and it means the report step can be run again on its
-own without re-running the load.
+Two properties make this robust. First, the load path and the Grafana path are separate: during the
+ladder the only external calls are to TFE; infra queries and annotations happen afterward, in the
+report step, from windows already on disk. That keeps Grafana latency and failures off the
+measurement, and it means **the report step can be re-run on its own** against a finished folder — to
+recover from a Grafana outage while Prometheus still holds the data, or to recompute the infra section
+after changing queries or thresholds — without re-running the load. Posting is idempotent: the step
+reads `annotations.json` first and skips anything already posted.
 
-Re-runnability is the main thing I took from the comparison. `run_test.sh --report <test-id>` repeats
-only the report step against a folder that already has its stage summaries and logs. Two cases make
-this worth it: a Grafana outage during the original run (retry while Prometheus still holds the data),
-and a changed set of queries or thresholds (recompute the infra section and the bottleneck call
-without touching TFE). Annotation posting is idempotent — the step reads `annotations.json` first and
-skips anything already posted, so a second run does not double-annotate.
+Second, the report step degrades. Because k6 can only write files from `handleSummary`, per-run detail
+is logged during each stage and parsed afterward, so a kill mid-ladder still leaves `test.log` and the
+finished stage summaries; the report step then produces a `status: "incomplete"` summary with run
+counts and completed stages, minus the knee analysis. If the report step itself fails, the wrapper
+writes a minimal `summary.json` from the stage files, so a result always exists.
 
-Because k6 can only write files from `handleSummary`, per-run detail is logged during the stage and
-parsed afterward. A side benefit is graceful failure: if k6 is killed mid-ladder, `test.log` and the
-finished stage summaries are still on disk, and the report step produces a `status: "incomplete"`
-summary with run counts and whatever stages completed, minus the knee analysis. If the report step
-itself fails, the wrapper writes a minimal `summary.json` from the stage files so a result always
-exists.
+## 6. Grafana integration decisions
 
-Everything the report step produces is a function of the folder. `runs.jsonl`, the stage summaries,
-`scenario.effective.json`, and `infra.json` are enough to recompute the knee with different thresholds
-later, in a spreadsheet or a script, without k6 in the loop.
+The mechanics are in Section 1; this section is the design around them.
 
-## Grafana integration
-
-Scope is read metrics, write annotations, nothing else. Both are optional and gated by the `grafana`
-block in the scenario (see `tfe-test-configuration-format.md`).
-
-Credentials are a Grafana service-account token in the env var named by `grafana.token_env` (default
-`GRAFANA_TOKEN`). [R] Scope the service account to querying the one data source and creating
-annotations, nothing more. If the variable is unset the Grafana steps are skipped, `infra.status`
-becomes `disabled`, and a warning is recorded.
-
-The queries live in their own file, `infra-queries.json`, not in the scenario. Metric names are
-specific to the cluster's exporters, not to a test, so the operator owns this file and the harness
-ships none of its own. The scenario points at it with `grafana.queries_file`.
+Queries live in their own file, `config/infra-queries.json`, not in the scenario, because metric names
+belong to the cluster, not to a test. The operator owns this file; the scenario's `grafana` block only
+holds the connection and toggles and points at it with `queries_file`.
 
 ```json
 {
   "version": 1,
   "queries": [
-    { "id": "tfe_pod_cpu",   "resource": "cpu",      "title": "TFE pods CPU (cores)",        "expr": "<PromQL>", "unit": "cores", "breach_above": 6.0 },
-    { "id": "pg_conn_ratio", "resource": "postgres", "title": "Postgres connections / max",  "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 }
+    { "id": "tfe_pod_cpu",   "resource": "cpu",      "title": "TFE pods CPU (cores)",       "expr": "<PromQL>", "unit": "cores", "breach_above": 6.0 },
+    { "id": "pg_conn_ratio", "resource": "postgres", "title": "Postgres connections / max", "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 }
   ]
 }
 ```
 
-`resource` is one of `cpu`, `memory`, `disk`, `postgres`, `redis`, `object_store`, `network`,
-`other`; it groups the resource table and names the bottleneck. `expr` should already reduce to a
-handful of series (`max by (pod)` and the like); at most 20 series per query are stored per stage, and
-anything beyond that is recorded as truncated. `breach_above` is the threshold that makes a resource
-eligible to be named the first bottleneck; a query without one is reported but never named. The file
-is hashed into `infra.source.queries_sha256`, so a result states which queries produced it. No example
-expressions are shipped because they depend entirely on your exporters.
+`resource` is one of `cpu`, `memory`, `disk`, `postgres`, `redis`, `object_store`, `network`, `other`;
+it groups the resource table and names the bottleneck. `expr` should already reduce to a handful of
+series (`max by (pod)` and the like); at most 20 series per query are stored per stage, more is
+recorded as truncated. `breach_above` is the threshold that makes a resource eligible to be named the
+first bottleneck; without it a query is reported but never named. The file is hashed into
+`infra.source.queries_sha256`, so a result states which queries produced it.
 
-For each stage and each query, the step runs one range query over the stage's measure window through
-`POST /api/ds/query` with the data source `uid`, `from`/`to` in epoch milliseconds, and a step from
-`grafana.step_sec`. [V] The endpoint, `queries`, `datasource.uid`, and `from`/`to` are documented; the
-Prometheus-specific body fields such as `expr` are not on that page, so confirm the exact request
-against your Grafana version in the pilot. Per series it stores `avg`, `p95`, `max`, and the sample
-count for the window, plus the same for the 60 seconds before the stage as a short reference line.
+Annotations are posted after the ladder from the recorded windows, never live (decision 5). Tag scheme:
+`tfcap`, `tfcap:<test-id>`, `tfcap:stage:<label>` on each stage region, plus `tfcap:knee` at the knee
+and a `tfcap`/`tfcap:<test-id>` point at test start and end. Prefer the tag-filtered dashboard
+annotation query (Section 1.4) over posting to specific dashboards, so markers appear everywhere
+without the harness knowing your dashboards.
 
-Annotations are posted after the ladder, from the recorded stage windows, never live:
+Clock skew is the one thing that can quietly corrupt the infra section, since query windows and
+annotation times come from the jump-host clock. At the start of a run the wrapper compares the `Date`
+header of a Grafana response with the local clock and records `clock_skew_ms` in `meta.json`; above two
+seconds it adds a warning, and stage-level resource numbers should not be trusted when the skew exceeds
+the query step.
 
-| Annotation | Kind | Tags |
-|---|---|---|
-| test start / end | point | `tfcap`, `tfcap:<test-id>` |
-| each stage, measure window | region | `tfcap`, `tfcap:<test-id>`, `tfcap:stage:<label>` |
-| knee | point at the knee stage | `tfcap`, `tfcap:<test-id>`, `tfcap:knee` |
+On failure each query gets a timeout and one retry; a query that still fails is written to `infra.json`
+with its error and `infra.status` becomes `partial`. Nothing on the Grafana path can change the test's
+`status` or exit code.
 
-[V] The annotation endpoint and payload differ by Grafana version — the current docs describe the
-resource-style API (`spec.time`, `spec.time_end`, `spec.tags`), older versions use
-`POST /api/annotations`. Confirm which your instance serves and keep the path in one place in
-`report.js`. Prefer tag-based display (a dashboard annotation query filtered on `tfcap`) over posting
-to specific dashboards, so the markers appear everywhere without the harness knowing your dashboards.
+## 7. Retention
 
-Clock skew is the one subtlety that can quietly corrupt the infra section, since query windows and
-annotation times come from the jump-host clock. At the start of a run the wrapper compares Grafana's
-`Date` response header with the local clock and records `clock_skew_ms` in `meta.json`; above two
-seconds it adds a warning, and stage-level resource numbers should not be trusted when the skew is
-larger than the query step.
-
-On failure, each query gets a timeout and one retry; a query that still fails is written to
-`infra.json` with its error and the overall `infra.status` becomes `partial`. Nothing on the Grafana
-path can change the test's `status` or its exit code.
-
-## Retention
-
-Retention is a property of the results directory, not of any one test, so it has its own file rather
-than a scenario field.
+Retention is a property of the results directory, not of any one test, so it has its own file.
 
 | Class | Files | Why | Default |
 |---|---|---|---|
@@ -255,10 +316,10 @@ than a scenario field.
 | medium | `summary-stage-*.json`, `runs.jsonl`, `runs.csv` | enough to recompute statistics | 180 days |
 | short | `test.log`, `metrics-stage-*.ndjson` | bulky; only needed to debug the harness | 30 days |
 
-[R] Measure the real sizes in the pilot. The keep and medium classes are kilobytes to a few megabytes
-per test. The raw k6 JSON is the large one: k6 emits a point per sample and several points per HTTP
-request, so a full multi-hour ladder is on the order of a hundred megabytes before gzip, and roughly a
-tenth of that after. Set the short-class cap from the measured figure.
+[R] Measure the real sizes in the pilot. Keep and medium are kilobytes to a few MB per test; the raw
+k6 JSON is the large one (a point per sample, several per HTTP request), on the order of a hundred MB
+before gzip for a multi-hour ladder and roughly a tenth of that after. Set the short-class cap from the
+measured figure.
 
 The policy lives in `config/retention.json`:
 
@@ -276,56 +337,52 @@ The policy lives in `config/retention.json`:
 }
 ```
 
-Pruning is a separate, explicit step. `tools/prune-results.sh` reads `retention.json`, is a dry run by
-default, and only deletes with `--apply`; a test run never deletes older results. It removes files
-past their class age first, then, if `max_total_mb` is still exceeded, the oldest short-class files;
-keep-class files are never size-pruned. A pinned test is exempt — pin it by setting `"pinned": true`
-in its `summary.json` (an empty `PINNED` file in the folder does the same), and pin the run that
-established your safe concurrency and the pilot that set the baseline, since later runs are read
-against them. When a file is pruned it stays listed in `manifest.json` with the date and reason, and
-`index.csv` rows are never removed, so a gap is always explained rather than mysterious. Incomplete,
-aborted, and invalid tests age out on the same schedule; they are evidence about how the harness
-fails and are not deleted early.
+Pruning is a separate, explicit step (`tools/prune-results.sh`, dry run by default, `--apply` to
+delete); a test run never deletes older results. It removes files past their class age first, then, if
+`max_total_mb` is still exceeded, the oldest short-class files; keep-class files are never size-pruned.
+A pinned test is exempt — pin it by setting `"pinned": true` in its `summary.json` (an empty `PINNED`
+file does the same), and pin the run that established your safe concurrency and the pilot that set the
+baseline, since later runs are read against them. A pruned file stays listed in `manifest.json` with
+the date and reason, and `index.csv` rows are never removed, so a gap is always explained. Incomplete,
+aborted, and invalid tests age out on the same schedule; they are evidence about how the harness fails.
 
 Three things sit outside the folder. Prometheus and Grafana metric retention belong to the platform
-team and are not managed here — that is exactly why `infra.json` copies the numbers in immediately; if
-the report step could not collect them, re-run it before the platform's retention window closes.
-Grafana annotations are small, tagged `tfcap:<test-id>`, and left in place by default
-(`delete_annotations_with_results: false`) because they are cheap and explain old dashboards; to erase
-a run's markers, `run_test.sh --purge-annotations <test-id>` deletes the ids in `annotations.json`.
-TFE's own data is the test's footprint, not its result: `cleanup.js` deletes the workspaces, and
-whether that also clears the runs, logs, and state-version rows from Postgres and object storage is
-measured in the pilot (design doc §12) and recorded in `cleanup.json`.
+team and are not managed here — which is exactly why `infra.json` copies the numbers in immediately; if
+the report step could not collect them, re-run it before the platform's window closes. Grafana
+annotations are small, tagged `tfcap:<test-id>`, and left in place by default
+(`delete_annotations_with_results: false`) because they are cheap and explain old dashboards; erase a
+run's markers with the delete call in Section 1.5. TFE's own data is the test's footprint, not its
+result: cleanup deletes the workspaces, and whether that also clears the runs, logs, and state-version
+rows from Postgres and object storage is measured in the pilot (design doc §12) and recorded in
+`cleanup.json`.
 
 [R] Treat the jump host as scratch, not the system of record. After each test, copy the keep class — a
-few hundred kilobytes — somewhere the team owns: `run_test.sh --export <test-id>` writes
-`<test-id>-keep.tar.gz` for Artifactory or the change record.
+few hundred KB — somewhere the team owns (Artifactory, or the change record). Results carry the TFE and
+Grafana addresses, the org and workspace names, the Artifactory URL, and infra metrics, but no tokens:
+scenarios store env-var names only and the client never logs the `Authorization` header. Treat the
+folder as internal — create it with `umask 027` (mode 0750) and keep `results/` out of shared repos.
 
-Results carry the TFE and Grafana addresses, the organization and workspace names, the Artifactory
-URL, and infrastructure metrics. They carry no tokens, because scenarios store env-var names only and
-the client never logs the `Authorization` header. Still, treat the folder as internal: create it with
-`umask 027` (mode 0750) and keep `results/` out of any shared repository.
+## 8. What this changes elsewhere
 
-## What this changes elsewhere
+Design doc §10 and §11 are superseded here. In the configuration format the `grafana` block points at
+`infra-queries.json` through `queries_file` instead of listing metrics inline, and the scenario no
+longer carries a `retention` block — retention moved to `retention.json`. The schema, the validator,
+and the format document were updated together.
 
-Design doc §10 and §11 are superseded here: the file layout, the enriched `summary.json`, and the
-infra/annotation handling are defined in this document. In the configuration format, the `grafana`
-block now points at `infra-queries.json` through `grafana.queries_file` instead of listing metrics
-inline, and the scenario no longer carries a `retention` block — retention moved to `retention.json`.
-The schema, the validator, and the format document were updated together.
+## 9. Not verified
 
-## Not verified
-
-- The exact Grafana annotation endpoint and payload for your version (resource API vs legacy `POST /api/annotations`).
-- The Prometheus body fields for `POST /api/ds/query` on your version.
-- The service-account permissions needed to query and to create annotations.
-- Whether a tag-based dashboard annotation query renders regions as expected.
+- The service-account role/permission needed to create annotations on your Grafana version and edition.
+- The proxy path (`/api/datasources/proxy/uid/:uid/api/v1/query_range`) and the annotation path on your
+  version (legacy `/api` vs the Grafana 13 `/apis` migration).
+- Whether a tag-based dashboard annotation query renders regions as expected on your dashboards.
 - The real on-disk size of `test.log` and the raw k6 output for a full ladder.
 - Whether your Grafana expires annotations on its own.
 
 ## Sources
 
+- [Grafana data source API — proxy `GET /api/datasources/proxy/uid/:uid/*`](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/data_source/)
+- [Grafana annotations API — `POST /api/annotations`, region via `timeEnd`, epoch ms](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/annotations/)
+- [Grafana service accounts and tokens](https://grafana.com/docs/grafana/latest/administration/service-accounts/)
+- [Prometheus HTTP API — `query_range`](https://prometheus.io/docs/prometheus/latest/querying/api/)
 - [k6 JSON output, gzipped when the filename ends in `.gz`](https://grafana.com/docs/k6/latest/results-output/real-time/json/)
-- [Grafana data source query API (`/api/ds/query`)](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/data_source/)
-- [Grafana annotations API](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/annotations/)
 - Earlier k6 and TFE sources are in the design document.

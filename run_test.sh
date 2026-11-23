@@ -120,9 +120,7 @@ k6 run merge.js \
 
 echo "done -> ${RESULTS}/summary.json"
 
-# 7) Retention: gzip raw files, enforce keep-days / max-tests (docs/RESULTS.md §6.1).
-if [ -x tools/prune-results.sh ]; then
-  tools/prune-results.sh results \
-    --keep-raw-days "${KEEP_RAW_DAYS:-14}" --max-local-tests "${MAX_LOCAL_TESTS:-50}" >>"$LOG" 2>&1 || true
-fi
+# A test run never prunes. Retention is a separate, explicit step (docs/RESULTS.md):
+#   tools/prune-results.sh results --retention config/retention.json            # dry run
+#   tools/prune-results.sh results --retention config/retention.json --apply    # compress + delete
 # cleanup runs via the EXIT trap

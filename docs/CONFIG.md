@@ -147,8 +147,9 @@ Top level: a `version`, three required descriptive objects (`test`, `tfe`, `work
 - **`saturation`** — the knee thresholds and the early-stop switch.
 - **`observed_config`** — records the TFE capacity setting and replica count so results can be read
   against the config ceiling; free-form, so other environment facts can be recorded alongside.
-- **`grafana`** (optional) — the results-generation stage's annotation + infra-metric-pull settings.
-- **`retention`** (optional) — how long local result files are kept.
+- **`grafana`** (optional) — connection + toggles for the report step's annotations and infra pull;
+  the queries themselves live in `infra-queries.json`. Retention is not a scenario field (it is in
+  `retention.json`).
 
 ---
 
@@ -246,32 +247,27 @@ Additional keys are allowed in `observed_config` (free-form); it is copied verba
 drives the below/at-ceiling stage labels.
 
 ### `grafana` (optional)
-Consumed by the results-generation stage (see `tfe-test-results-and-retention.md`): writes a Grafana
-annotation per stage window and pulls per-window infra metrics into the results. Outbound calls to the
-Grafana API only; the token comes from `token_env`.
+Connection and toggles for the re-runnable report step, which writes stage-window annotations and
+pulls per-window infra metrics (see `tfe-test-results-and-retention.md`). Outbound calls to the
+Grafana API only; the token comes from `token_env`. The PromQL itself is **not** here — it lives in
+the operator-owned `infra-queries.json`, referenced by `queries_file`, because metric names are
+cluster-specific, not test-specific.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `false` | turn the Grafana integration on |
 | `base_url` | https URL | req if enabled | Grafana base URL |
 | `token_env` | env var name | `GRAFANA_TOKEN` | variable holding the Grafana API token |
+| `datasource_uid` | string | req if enabled | datasource queried for infra metrics |
+| `queries_file` | path | `config/infra-queries.json` | operator-owned PromQL query file |
+| `step_sec` | integer ≥1 | `15` | range-query step in seconds |
+| `annotate` | boolean | `true` | post stage-window annotations after the ladder (never live) |
+| `annotation_tags` | string[] | `["tfcap"]` | base tags; `test_id`, `stage`, `knee` are added automatically |
 | `org_id` | integer ≥1 | none | Grafana org, if not default |
-| `annotate` | boolean | `true` | write a region annotation per stage measure-window |
-| `annotation_tags` | string[] | `["tfe-captest"]` | base tags; `test_id` and `stage` are added automatically |
-| `datasource_uid` | string | none | datasource queried for infra metrics |
-| `metrics` | array of `{name, expr, stat}` | none | PromQL pulled per stage window; `stat` ∈ `avg\|max\|p95` (default `p95`) |
 | `dashboards` | string[] | none | dashboard links recorded in `summary.json` |
 
-### `retention` (optional)
-How long local result files are kept (see `tfe-test-results-and-retention.md`).
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `keep_raw_days` | integer ≥0 | `14` | gzip then delete raw files (`test.log`, `metrics-*.ndjson`) older than this |
-| `max_local_tests` | integer ≥1 | `50` | prune oldest test folders beyond this (keep a `summary.json` stub) |
-| `compress_raw` | boolean | `true` | gzip raw files after a run |
-| `archive` | object `{enabled, artifact_url_base}` | off | PUT the canonical-tier tarball per `test_id` to Artifactory |
-| `grafana_annotations` | `keep` or `delete_after_days:N` | `keep` | annotation retention policy |
+> **Retention is not a scenario field.** It is a property of the results directory, so it lives in
+> `config/retention.json`; the full policy is in `tfe-test-results-and-retention.md` §Retention.
 
 ---
 

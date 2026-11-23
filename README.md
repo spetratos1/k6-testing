@@ -23,10 +23,12 @@ lib/util.js                 durations, name templating, run-state groups, timest
 config/scenario.schema.json authoritative scenario format (JSON Schema)
 config/scenario.example.json  annotated example scenario
 config/examples/            ready-made scenarios (smoke, full-ladder)
+config/infra-queries.json   operator-owned PromQL for the Grafana infra pull
+config/retention.json       results retention policy (classes, pinning)
 docs/CONFIG.md              the configuration format (design + field reference)
 docs/RESULTS.md             test results + retention strategy (outputs, files, Grafana, retention)
 tools/validate-scenario.mjs Node-only scenario check (validate + print the plan)
-tools/prune-results.sh      enforce the local results retention policy
+tools/prune-results.sh      enforce the retention policy (dry run; --apply to delete)
 workload/{noprov-light,state-heavy}/  synthetic Terraform -> package as .tar.gz
 ```
 

@@ -33,5 +33,15 @@
     "failure_rate_pct": 2,
     "stop_on_knee": true
   },
+  "grafana": {
+    "enabled": true,
+    "base_url": "https://grafana.example.internal",
+    "token_env": "GRAFANA_TOKEN",
+    "datasource_uid": "prometheus",
+    "queries_file": "config/infra-queries.json",
+    "step_sec": 15,
+    "annotate": true,
+    "dashboards": ["https://grafana.example.internal/d/tfe-overview"]
+  },
   "observed_config": { "tfe_capacity_concurrency": 20, "terraform_enterprise_replicas": 3 }
 }

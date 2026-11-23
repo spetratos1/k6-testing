@@ -134,49 +134,18 @@
     "grafana": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional. Consumed by the results-generation stage: writes stage-window annotations and pulls per-window infra metrics (see docs/RESULTS.md). Outbound calls to the Grafana API only; secrets via token_env.",
+      "description": "Optional. Consumed by the re-runnable report step: writes stage-window annotations and pulls per-window infra metrics (see docs/RESULTS.md). Outbound calls to the Grafana API only; secrets via token_env. Retention is NOT here — it lives in config/retention.json.",
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "base_url": { "type": "string", "format": "uri", "description": "Grafana base URL (required when enabled)." },
         "token_env": { "type": "string", "default": "GRAFANA_TOKEN", "description": "Env var holding the Grafana API token." },
         "org_id": { "type": "integer", "minimum": 1 },
-        "annotate": { "type": "boolean", "default": true, "description": "Write a region annotation per stage measure-window." },
-        "annotation_tags": { "type": "array", "items": { "type": "string" }, "default": ["tfe-captest"], "description": "Base tags; test_id and stage are added automatically." },
-        "datasource_uid": { "type": "string", "description": "Datasource to query for infra metrics." },
-        "metrics": {
-          "type": "array",
-          "description": "PromQL pulled per stage window, reduced to avg/max/p95.",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "expr"],
-            "properties": {
-              "name": { "type": "string" },
-              "expr": { "type": "string" },
-              "stat": { "type": "string", "enum": ["avg", "max", "p95"], "default": "p95" }
-            }
-          }
-        },
+        "datasource_uid": { "type": "string", "description": "Datasource to query for infra metrics (required when enabled)." },
+        "queries_file": { "type": "string", "default": "config/infra-queries.json", "description": "Path to the operator-owned PromQL query file; the harness ships no metric names of its own." },
+        "step_sec": { "type": "integer", "minimum": 1, "default": 15, "description": "Range-query step in seconds." },
+        "annotate": { "type": "boolean", "default": true, "description": "Post stage-window annotations after the ladder (never live)." },
+        "annotation_tags": { "type": "array", "items": { "type": "string" }, "default": ["tfcap"], "description": "Base tags; test_id, stage, and knee are added automatically." },
         "dashboards": { "type": "array", "items": { "type": "string" }, "description": "Dashboard links recorded in summary.json." }
-      }
-    },
-    "retention": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Optional. How long local result files are kept (see docs/RESULTS.md).",
-      "properties": {
-        "keep_raw_days": { "type": "integer", "minimum": 0, "default": 14, "description": "Gzip then delete raw files (test.log, metrics-*.ndjson) older than this." },
-        "max_local_tests": { "type": "integer", "minimum": 1, "default": 50, "description": "Prune oldest test folders beyond this, keeping a summary.json stub." },
-        "compress_raw": { "type": "boolean", "default": true },
-        "archive": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": false },
-            "artifact_url_base": { "type": "string", "format": "uri", "description": "Artifactory base URL to PUT the canonical-tier tarball per test_id." }
-          }
-        },
-        "grafana_annotations": { "type": "string", "pattern": "^(keep|delete_after_days:[0-9]+)$", "default": "keep", "description": "keep, or delete_after_days:N." }
       }
     }
   }
