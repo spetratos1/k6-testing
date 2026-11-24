@@ -99,6 +99,27 @@ executing sags below target with an empty queue is the jump host or API, not TFE
 invalid. `first_bottleneck` is a pointer (the first resource over its `breach_above` at or before the
 knee), not proof; the evidence is `infra.per_stage`.
 
+### Scope: one scenario per result
+
+A result folder is one run of **one scenario** — one workload and one ladder. In the example the rows
+are **stages** (concurrency steps: `baseline`, `c10` … `c30`), not scenarios; `config.scenario` names
+the single scenario the folder is for. Since one scenario uses one workload archive (see the
+configuration format, "what is deliberately not configurable"), a test that spans several workloads —
+`state-heavy`, `plan-heavy`, `noprov-light` — or several repeats of the same ladder is **several
+runs**, each with its own dated folder and `summary.json`. There is deliberately no combined
+multi-scenario file: each result stays self-contained and independently trustworthy, which is what
+makes manual retention and comparison viable. Compare across scenarios by reading each folder's
+headline fields:
+
+```bash
+for d in results/*/; do
+  jq -c '{scn:.config.scenario, knee:.analysis.knee_concurrency, safe:.analysis.safe_operating_concurrency, bn:.infra.first_bottleneck.resource}' "$d/summary.json"
+done
+```
+
+Running several scenarios back-to-back (a "campaign") is a thin loop in the wrapper over a list of
+scenario files; each still produces its own folder, and the result format does not change.
+
 ## 3. Files
 
 ```
@@ -191,11 +212,13 @@ shape; `infra.per_stage` carries all five:
     "Single ladder repeat: treat the knee as a hypothesis; repeat 2-3 times at different hours.",
     "No return-to-baseline run in this invocation."
   ],
-  "analysis": {
+  "analysis": {                      // the verdict — derived by the report step from the stage metrics + infra, never raw data
     "baseline_stage": "baseline", "knee_stage": "c25", "knee_concurrency": 25,
+    // first_breached: the first stage where a saturation signal tripped, and which ones (S1-S4)
     "first_breached": [ { "stage": "c25", "signals": ["S2", "S3"] } ],
-    "confirmed_by": "c30",
+    "confirmed_by": "c30",           // the next stage up that confirmed the knee, so it is not a one-stage blip
     "safe_operating_concurrency": 20,
+    // headroom: how far the first-bottleneck resource sat below its threshold at the recommended stage (slack before it bites)
     "headroom": { "resource": "postgres", "stage": "c20", "value": 0.58, "threshold": 0.85, "headroom_pct": 31.8 },
     "confidence": "low", "repeats": 1,
     "method": "highest ladder stage below the knee where S1-S4 all pass and the first-bottleneck resource is >=25% below its threshold"
@@ -241,7 +264,7 @@ shape; `infra.per_stage` carries all five:
         "S3": { "name": "throughput efficiency",       "value": 0.70, "threshold": 0.8, "breached": true },
         "S4": { "name": "failure rate",                "value": 0.0,  "threshold": 0.01, "breached": false } } }
   ],
-  "infra": {
+  "infra": {                         // resource usage per stage, pulled from Grafana after the run; the durable copy of the 12h-only Prometheus data
     "status": "ok",
     "source": { "grafana": "https://grafana.example.internal", "datasource_uid": "prom-main", "queries_sha256": "e3b0c4…" },
     "queries": [
@@ -256,6 +279,7 @@ shape; `infra.per_stage` carries all five:
       { "stage": "c25", "tfe_pod_cpu": { "avg": 3.31, "p95": 4.28, "max": 4.60 }, "pg_conn_ratio": { "avg": 0.63, "p95": 0.82, "max": 0.88 }, "minio_latency_p95": { "avg": 0.25, "p95": 0.32, "max": 0.34 } },
       { "stage": "c30", "tfe_pod_cpu": { "avg": 3.67, "p95": 4.74, "max": 5.10 }, "pg_conn_ratio": { "avg": 0.70, "p95": 0.90, "max": 0.97 }, "minio_latency_p95": { "avg": 0.45, "p95": 0.58, "max": 0.62 } }
     ],
+    // first_bottleneck: the first resource over its breach_above at or before the knee — a pointer to where to look, not proof
     "first_bottleneck": { "resource": "postgres", "query": "pg_conn_ratio", "stage": "c25", "value": 0.88, "threshold": 0.85 }
   },
   "cleanup": { "workspaces_created": 1085, "workspaces_deleted": 1085, "force_deleted": 0, "leftover": 0, "result": "clean" },
