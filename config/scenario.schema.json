@@ -134,7 +134,7 @@
     "grafana": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional. Consumed by the re-runnable report step: writes stage-window annotations and pulls per-window infra metrics (see docs/RESULTS.md). Outbound calls to the Grafana API only; secrets via token_env. Retention is NOT here — it lives in config/retention.json.",
+      "description": "Optional. Consumed by the re-runnable report step: writes stage-window annotations and pulls per-window infra metrics (see docs/RESULTS.md). Outbound calls to the Grafana API only; secrets via token_env. Retention is NOT here — it is manual for now (dated result folders).",
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "base_url": { "type": "string", "format": "uri", "description": "Grafana base URL (required when enabled)." },

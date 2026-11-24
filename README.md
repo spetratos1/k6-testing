@@ -24,11 +24,9 @@ config/scenario.schema.json authoritative scenario format (JSON Schema)
 config/scenario.example.json  annotated example scenario
 config/examples/            ready-made scenarios (smoke, full-ladder)
 config/infra-queries.json   operator-owned PromQL for the Grafana infra pull
-config/retention.json       results retention policy (classes, pinning)
 docs/CONFIG.md              the configuration format (design + field reference)
-docs/RESULTS.md             test results + retention strategy (outputs, files, Grafana, retention)
+docs/RESULTS.md             test results + retention design (output, Grafana, manual retention)
 tools/validate-scenario.mjs Node-only scenario check (validate + print the plan)
-tools/prune-results.sh      enforce the retention policy (dry run; --apply to delete)
 workload/{noprov-light,state-heavy}/  synthetic Terraform -> package as .tar.gz
 ```
 
@@ -55,8 +53,7 @@ export TFE_TOKEN=xxxxx            # required (force-delete capable)
 export ARTIFACTORY_TOKEN=yyyyy    # optional (Artifactory auth)
 export SSL_CERT_FILE=/etc/ssl/tfe-ca.pem   # private CA, recommended
 ./run_test.sh config/scenario.example.json
-# artifacts: results/<test_id>/summary.json, summary-stage-*.json, test.log, meta.json,
-#            guard.json, cleanup.json
+# result: results/<test_id>/summary.json (the result) + runs.jsonl (raw per-run rows). See docs/RESULTS.md.
 ```
 The wrapper runs a **startup guard** first (aborts if leftover `tfcap-*` workspaces from another
 test exist; `ALLOW_FOREIGN=1` to override), then the ladder, then a **return-to-baseline** stage

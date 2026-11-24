@@ -148,8 +148,8 @@ Top level: a `version`, three required descriptive objects (`test`, `tfe`, `work
 - **`observed_config`** — records the TFE capacity setting and replica count so results can be read
   against the config ceiling; free-form, so other environment facts can be recorded alongside.
 - **`grafana`** (optional) — connection + toggles for the report step's annotations and infra pull;
-  the queries themselves live in `infra-queries.json`. Retention is not a scenario field (it is in
-  `retention.json`).
+  the queries themselves live in `infra-queries.json`. Retention is not a scenario field (it is
+  manual for now; see `tfe-test-results-and-retention.md`).
 
 ---
 
@@ -266,8 +266,8 @@ cluster-specific, not test-specific.
 | `org_id` | integer ≥1 | none | Grafana org, if not default |
 | `dashboards` | string[] | none | dashboard links recorded in `summary.json` |
 
-> **Retention is not a scenario field.** It is a property of the results directory, so it lives in
-> `config/retention.json`; the full policy is in `tfe-test-results-and-retention.md` §Retention.
+> **Retention is not a scenario field and is manual for now.** Each run writes a dated folder under
+> `results/`, deleted by hand; see `tfe-test-results-and-retention.md` §Retention.
 
 ---
 

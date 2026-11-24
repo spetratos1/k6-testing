@@ -120,7 +120,6 @@ k6 run merge.js \
 
 echo "done -> ${RESULTS}/summary.json"
 
-# A test run never prunes. Retention is a separate, explicit step (docs/RESULTS.md):
-#   tools/prune-results.sh results --retention config/retention.json            # dry run
-#   tools/prune-results.sh results --retention config/retention.json --apply    # compress + delete
+# Retention is manual for now: results/<test-id>/ folders are date-stamped; delete old ones by hand
+# (e.g. find results -maxdepth 1 -mtime +30 -type d). See docs/RESULTS.md.
 # cleanup runs via the EXIT trap
