@@ -1,0 +1,973 @@
+{
+  "schemaVersion": 1,
+  "testId": "20261123-140500-a3f9",
+  "status": "completed",
+  "stop": {
+    "reason": "all_stages_complete",
+    "detail": null
+  },
+  "warnings": [
+    "Single ladder repeat: treat the knee as a hypothesis. Repeat 2-3 times at different hours.",
+    "No return-to-baseline run in this invocation (run it separately, design section 5)."
+  ],
+  "analysis": {
+    "baselineStage": "baseline",
+    "kneeStage": "c25",
+    "kneeConcurrency": 25,
+    "firstBreached": [
+      {
+        "stage": "c25",
+        "signals": [
+          "S2",
+          "S3"
+        ]
+      }
+    ],
+    "confirmedBy": "c30",
+    "recommendedSafeConcurrency": 20,
+    "headroom": {
+      "resource": "postgres",
+      "stage": "c20",
+      "value": 0.58,
+      "threshold": 0.85,
+      "headroomPct": 31.8
+    },
+    "confidence": "low",
+    "repeats": 1,
+    "method": "highest ladder stage below the knee where S1-S4 all pass and the first-bottleneck resource is at least 25% below its threshold"
+  },
+  "stages": [
+    {
+      "index": 0,
+      "name": "baseline",
+      "role": "baseline",
+      "targetConcurrency": 1,
+      "window": {
+        "start": "2026-11-23T14:05:02Z",
+        "measureStart": "2026-11-23T14:06:32Z",
+        "end": "2026-11-23T14:36:32Z",
+        "startOffsetSec": 0,
+        "measureStartOffsetSec": 90,
+        "endOffsetSec": 1890
+      },
+      "valid": true,
+      "invalidReason": null,
+      "runs": {
+        "created": 33,
+        "measured": 30,
+        "applied": 30,
+        "errored": 0,
+        "timedOut": 0,
+        "canceled": 0,
+        "noChanges": 0
+      },
+      "throughputPerMin": 1.0,
+      "throughputEfficiency": 1.0,
+      "observed": {
+        "waitingAvg": 0.05,
+        "executingAvg": 0.92
+      },
+      "durationsSec": {
+        "pending": {
+          "n": 30,
+          "p50": 0.3,
+          "p90": 0.4,
+          "p95": 0.6,
+          "max": 0.9
+        },
+        "planQueue": {
+          "n": 30,
+          "p50": 1.6,
+          "p90": 1.7,
+          "p95": 1.7,
+          "max": 1.8
+        },
+        "plan": {
+          "n": 30,
+          "p50": 13.8,
+          "p90": 14.6,
+          "p95": 15.2,
+          "max": 17.9
+        },
+        "applyQueue": {
+          "n": 30,
+          "p50": 1.4,
+          "p90": 1.4,
+          "p95": 1.5,
+          "max": 1.6
+        },
+        "apply": {
+          "n": 30,
+          "p50": 38.5,
+          "p90": 40.8,
+          "p95": 42.4,
+          "max": 50.1
+        },
+        "run": {
+          "n": 30,
+          "p50": 56,
+          "p90": 58.0,
+          "p95": 59.0,
+          "max": 63.0
+        }
+      },
+      "workspaceOpsSec": {
+        "create": {
+          "n": 33,
+          "p50": 1.2,
+          "p95": 2.1,
+          "max": 3.4
+        },
+        "delete": {
+          "n": 33,
+          "p50": 1.4,
+          "p95": 2.6,
+          "max": 4.8
+        }
+      },
+      "api": {
+        "requests": 782,
+        "status429": 0,
+        "status5xx": 0
+      },
+      "criteria": null
+    },
+    {
+      "index": 1,
+      "name": "c10",
+      "role": "ladder",
+      "targetConcurrency": 10,
+      "window": {
+        "start": "2026-11-23T14:36:32Z",
+        "measureStart": "2026-11-23T14:39:32Z",
+        "end": "2026-11-23T14:54:32Z",
+        "startOffsetSec": 1890,
+        "measureStartOffsetSec": 2070,
+        "endOffsetSec": 2970
+      },
+      "valid": true,
+      "invalidReason": null,
+      "runs": {
+        "created": 158,
+        "measured": 144,
+        "applied": 144,
+        "errored": 0,
+        "timedOut": 0,
+        "canceled": 0,
+        "noChanges": 0
+      },
+      "throughputPerMin": 9.6,
+      "throughputEfficiency": 0.96,
+      "observed": {
+        "waitingAvg": 0.59,
+        "executingAvg": 9.06
+      },
+      "durationsSec": {
+        "pending": {
+          "n": 144,
+          "p50": 0.3,
+          "p90": 0.4,
+          "p95": 0.6,
+          "max": 0.9
+        },
+        "planQueue": {
+          "n": 144,
+          "p50": 1.9,
+          "p90": 2.0,
+          "p95": 2.1,
+          "max": 2.3
+        },
+        "plan": {
+          "n": 144,
+          "p50": 14.4,
+          "p90": 15.3,
+          "p95": 15.8,
+          "max": 18.7
+        },
+        "applyQueue": {
+          "n": 144,
+          "p50": 1.6,
+          "p90": 1.7,
+          "p95": 1.8,
+          "max": 2.0
+        },
+        "apply": {
+          "n": 144,
+          "p50": 39.5,
+          "p90": 41.9,
+          "p95": 43.5,
+          "max": 51.4
+        },
+        "run": {
+          "n": 144,
+          "p50": 58,
+          "p90": 62.0,
+          "p95": 64.0,
+          "max": 71.0
+        }
+      },
+      "workspaceOpsSec": {
+        "create": {
+          "n": 158,
+          "p50": 1.2,
+          "p95": 2.1,
+          "max": 3.4
+        },
+        "delete": {
+          "n": 158,
+          "p50": 1.4,
+          "p95": 2.6,
+          "max": 4.8
+        }
+      },
+      "api": {
+        "requests": 3828,
+        "status429": 0,
+        "status5xx": 0
+      },
+      "criteria": {
+        "S1": {
+          "name": "median plan queue wait (s)",
+          "value": 1.9,
+          "threshold": 30,
+          "breached": false
+        },
+        "S2": {
+          "name": "p95 run duration vs baseline",
+          "value": 1.08,
+          "threshold": 1.5,
+          "breached": false
+        },
+        "S3": {
+          "name": "throughput efficiency",
+          "value": 0.96,
+          "threshold": 0.8,
+          "breached": false
+        },
+        "S4": {
+          "name": "failure rate",
+          "value": 0.0,
+          "threshold": 0.01,
+          "breached": false
+        }
+      }
+    },
+    {
+      "index": 2,
+      "name": "c20",
+      "role": "ladder",
+      "targetConcurrency": 20,
+      "window": {
+        "start": "2026-11-23T14:54:32Z",
+        "measureStart": "2026-11-23T14:58:02Z",
+        "end": "2026-11-23T15:13:02Z",
+        "startOffsetSec": 2970,
+        "measureStartOffsetSec": 3180,
+        "endOffsetSec": 4080
+      },
+      "valid": true,
+      "invalidReason": null,
+      "runs": {
+        "created": 291,
+        "measured": 263,
+        "applied": 263,
+        "errored": 0,
+        "timedOut": 0,
+        "canceled": 0,
+        "noChanges": 0
+      },
+      "throughputPerMin": 17.53,
+      "throughputEfficiency": 0.88,
+      "observed": {
+        "waitingAvg": 1.72,
+        "executingAvg": 17.06
+      },
+      "durationsSec": {
+        "pending": {
+          "n": 263,
+          "p50": 0.4,
+          "p90": 0.6,
+          "p95": 0.8,
+          "max": 1.2
+        },
+        "planQueue": {
+          "n": 263,
+          "p50": 3.4,
+          "p90": 3.8,
+          "p95": 3.9,
+          "max": 4.7
+        },
+        "plan": {
+          "n": 263,
+          "p50": 15.2,
+          "p90": 16.1,
+          "p95": 16.7,
+          "max": 19.8
+        },
+        "applyQueue": {
+          "n": 263,
+          "p50": 2.2,
+          "p90": 2.4,
+          "p95": 2.6,
+          "max": 3.0
+        },
+        "apply": {
+          "n": 263,
+          "p50": 40.4,
+          "p90": 42.8,
+          "p95": 44.4,
+          "max": 52.5
+        },
+        "run": {
+          "n": 263,
+          "p50": 62,
+          "p90": 69.0,
+          "p95": 72.0,
+          "max": 85.0
+        }
+      },
+      "workspaceOpsSec": {
+        "create": {
+          "n": 291,
+          "p50": 1.2,
+          "p95": 2.1,
+          "max": 3.4
+        },
+        "delete": {
+          "n": 291,
+          "p50": 1.4,
+          "p95": 2.6,
+          "max": 4.8
+        }
+      },
+      "api": {
+        "requests": 7355,
+        "status429": 0,
+        "status5xx": 0
+      },
+      "criteria": {
+        "S1": {
+          "name": "median plan queue wait (s)",
+          "value": 3.4,
+          "threshold": 30,
+          "breached": false
+        },
+        "S2": {
+          "name": "p95 run duration vs baseline",
+          "value": 1.22,
+          "threshold": 1.5,
+          "breached": false
+        },
+        "S3": {
+          "name": "throughput efficiency",
+          "value": 0.88,
+          "threshold": 0.8,
+          "breached": false
+        },
+        "S4": {
+          "name": "failure rate",
+          "value": 0.0,
+          "threshold": 0.01,
+          "breached": false
+        }
+      }
+    },
+    {
+      "index": 3,
+      "name": "c25",
+      "role": "ladder",
+      "targetConcurrency": 25,
+      "window": {
+        "start": "2026-11-23T15:13:02Z",
+        "measureStart": "2026-11-23T15:17:02Z",
+        "end": "2026-11-23T15:32:02Z",
+        "startOffsetSec": 4080,
+        "measureStartOffsetSec": 4320,
+        "endOffsetSec": 5220
+      },
+      "valid": true,
+      "invalidReason": null,
+      "runs": {
+        "created": 299,
+        "measured": 263,
+        "applied": 263,
+        "errored": 0,
+        "timedOut": 0,
+        "canceled": 0,
+        "noChanges": 0
+      },
+      "throughputPerMin": 17.53,
+      "throughputEfficiency": 0.7,
+      "observed": {
+        "waitingAvg": 5.83,
+        "executingAvg": 17.95
+      },
+      "durationsSec": {
+        "pending": {
+          "n": 263,
+          "p50": 0.5,
+          "p90": 0.8,
+          "p95": 1.0,
+          "max": 1.5
+        },
+        "planQueue": {
+          "n": 263,
+          "p50": 14.5,
+          "p90": 16.7,
+          "p95": 17.8,
+          "max": 21.9
+        },
+        "plan": {
+          "n": 263,
+          "p50": 17.0,
+          "p90": 18.0,
+          "p95": 18.7,
+          "max": 22.1
+        },
+        "applyQueue": {
+          "n": 263,
+          "p50": 4.5,
+          "p90": 5.2,
+          "p95": 5.5,
+          "max": 6.8
+        },
+        "apply": {
+          "n": 263,
+          "p50": 41.5,
+          "p90": 44.0,
+          "p95": 45.7,
+          "max": 54.0
+        },
+        "run": {
+          "n": 263,
+          "p50": 78,
+          "p90": 90.0,
+          "p95": 96.0,
+          "max": 118.0
+        }
+      },
+      "workspaceOpsSec": {
+        "create": {
+          "n": 299,
+          "p50": 1.2,
+          "p95": 2.1,
+          "max": 3.4
+        },
+        "delete": {
+          "n": 299,
+          "p50": 1.4,
+          "p95": 2.6,
+          "max": 4.8
+        }
+      },
+      "api": {
+        "requests": 8813,
+        "status429": 0,
+        "status5xx": 1
+      },
+      "criteria": {
+        "S1": {
+          "name": "median plan queue wait (s)",
+          "value": 14.5,
+          "threshold": 30,
+          "breached": false
+        },
+        "S2": {
+          "name": "p95 run duration vs baseline",
+          "value": 1.63,
+          "threshold": 1.5,
+          "breached": true
+        },
+        "S3": {
+          "name": "throughput efficiency",
+          "value": 0.7,
+          "threshold": 0.8,
+          "breached": true
+        },
+        "S4": {
+          "name": "failure rate",
+          "value": 0.0,
+          "threshold": 0.01,
+          "breached": false
+        }
+      }
+    },
+    {
+      "index": 4,
+      "name": "c30",
+      "role": "ladder",
+      "targetConcurrency": 30,
+      "window": {
+        "start": "2026-11-23T15:32:02Z",
+        "measureStart": "2026-11-23T15:36:02Z",
+        "end": "2026-11-23T15:51:02Z",
+        "startOffsetSec": 5220,
+        "measureStartOffsetSec": 5460,
+        "endOffsetSec": 6360
+      },
+      "valid": true,
+      "invalidReason": null,
+      "runs": {
+        "created": 304,
+        "measured": 258,
+        "applied": 254,
+        "errored": 4,
+        "timedOut": 0,
+        "canceled": 0,
+        "noChanges": 0
+      },
+      "throughputPerMin": 17.2,
+      "throughputEfficiency": 0.57,
+      "observed": {
+        "waitingAvg": 10.05,
+        "executingAvg": 18.66
+      },
+      "durationsSec": {
+        "pending": {
+          "n": 258,
+          "p50": 0.6,
+          "p90": 0.9,
+          "p95": 1.2,
+          "max": 1.8
+        },
+        "planQueue": {
+          "n": 258,
+          "p50": 27.0,
+          "p90": 33.2,
+          "p95": 36.0,
+          "max": 48.1
+        },
+        "plan": {
+          "n": 258,
+          "p50": 18.8,
+          "p90": 19.9,
+          "p95": 20.7,
+          "max": 24.4
+        },
+        "applyQueue": {
+          "n": 258,
+          "p50": 6.4,
+          "p90": 7.9,
+          "p95": 8.5,
+          "max": 11.4
+        },
+        "apply": {
+          "n": 258,
+          "p50": 43.2,
+          "p90": 45.8,
+          "p95": 47.5,
+          "max": 56.2
+        },
+        "run": {
+          "n": 258,
+          "p50": 96,
+          "p90": 118.0,
+          "p95": 128.0,
+          "max": 171.0
+        }
+      },
+      "workspaceOpsSec": {
+        "create": {
+          "n": 304,
+          "p50": 1.2,
+          "p95": 2.1,
+          "max": 3.4
+        },
+        "delete": {
+          "n": 304,
+          "p50": 1.4,
+          "p95": 2.6,
+          "max": 4.8
+        }
+      },
+      "api": {
+        "requests": 10397,
+        "status429": 0,
+        "status5xx": 3
+      },
+      "criteria": {
+        "S1": {
+          "name": "median plan queue wait (s)",
+          "value": 27.0,
+          "threshold": 30,
+          "breached": false
+        },
+        "S2": {
+          "name": "p95 run duration vs baseline",
+          "value": 2.17,
+          "threshold": 1.5,
+          "breached": true
+        },
+        "S3": {
+          "name": "throughput efficiency",
+          "value": 0.57,
+          "threshold": 0.8,
+          "breached": true
+        },
+        "S4": {
+          "name": "failure rate",
+          "value": 0.0155,
+          "threshold": 0.01,
+          "breached": true
+        }
+      }
+    }
+  ],
+  "infra": {
+    "status": "ok",
+    "reason": null,
+    "source": {
+      "grafana": "https://grafana.example.internal",
+      "datasourceUid": "prom-main"
+    },
+    "queries": [
+      {
+        "id": "tfe_pod_cpu",
+        "resource": "cpu",
+        "title": "TFE pods CPU (cores, max pod)",
+        "unit": "cores",
+        "breachAbove": 6.0
+      },
+      {
+        "id": "tfe_pod_mem",
+        "resource": "memory",
+        "title": "TFE pods memory / limit (max pod)",
+        "unit": "ratio",
+        "breachAbove": 0.85
+      },
+      {
+        "id": "pg_conn_ratio",
+        "resource": "postgres",
+        "title": "Postgres connections / max",
+        "unit": "ratio",
+        "breachAbove": 0.85
+      },
+      {
+        "id": "redis_cpu",
+        "resource": "redis",
+        "title": "Redis CPU (cores)",
+        "unit": "cores",
+        "breachAbove": null
+      },
+      {
+        "id": "minio_latency_p95",
+        "resource": "minio",
+        "title": "MinIO request latency p95 (s)",
+        "unit": "seconds",
+        "breachAbove": 1.0
+      }
+    ],
+    "perStage": [
+      {
+        "stage": "baseline",
+        "tfe_pod_cpu": {
+          "avg": 0.648,
+          "p95": 0.837,
+          "max": 0.9,
+          "n": 120
+        },
+        "tfe_pod_mem": {
+          "avg": 0.295,
+          "p95": 0.381,
+          "max": 0.41,
+          "n": 120
+        },
+        "pg_conn_ratio": {
+          "avg": 0.086,
+          "p95": 0.112,
+          "max": 0.12,
+          "n": 120
+        },
+        "redis_cpu": {
+          "avg": 0.036,
+          "p95": 0.047,
+          "max": 0.05,
+          "n": 120
+        },
+        "minio_latency_p95": {
+          "avg": 0.043,
+          "p95": 0.056,
+          "max": 0.06,
+          "n": 120
+        }
+      },
+      {
+        "stage": "c10",
+        "tfe_pod_cpu": {
+          "avg": 1.728,
+          "p95": 2.232,
+          "max": 2.4,
+          "n": 60
+        },
+        "tfe_pod_mem": {
+          "avg": 0.338,
+          "p95": 0.437,
+          "max": 0.47,
+          "n": 60
+        },
+        "pg_conn_ratio": {
+          "avg": 0.223,
+          "p95": 0.288,
+          "max": 0.31,
+          "n": 60
+        },
+        "redis_cpu": {
+          "avg": 0.079,
+          "p95": 0.102,
+          "max": 0.11,
+          "n": 60
+        },
+        "minio_latency_p95": {
+          "avg": 0.065,
+          "p95": 0.084,
+          "max": 0.09,
+          "n": 60
+        }
+      },
+      {
+        "stage": "c20",
+        "tfe_pod_cpu": {
+          "avg": 2.808,
+          "p95": 3.627,
+          "max": 3.9,
+          "n": 60
+        },
+        "tfe_pod_mem": {
+          "avg": 0.374,
+          "p95": 0.484,
+          "max": 0.52,
+          "n": 60
+        },
+        "pg_conn_ratio": {
+          "avg": 0.418,
+          "p95": 0.539,
+          "max": 0.58,
+          "n": 60
+        },
+        "redis_cpu": {
+          "avg": 0.137,
+          "p95": 0.177,
+          "max": 0.19,
+          "n": 60
+        },
+        "minio_latency_p95": {
+          "avg": 0.108,
+          "p95": 0.14,
+          "max": 0.15,
+          "n": 60
+        }
+      },
+      {
+        "stage": "c25",
+        "tfe_pod_cpu": {
+          "avg": 3.312,
+          "p95": 4.278,
+          "max": 4.6,
+          "n": 60
+        },
+        "tfe_pod_mem": {
+          "avg": 0.396,
+          "p95": 0.512,
+          "max": 0.55,
+          "n": 60
+        },
+        "pg_conn_ratio": {
+          "avg": 0.634,
+          "p95": 0.818,
+          "max": 0.88,
+          "n": 60
+        },
+        "redis_cpu": {
+          "avg": 0.187,
+          "p95": 0.242,
+          "max": 0.26,
+          "n": 60
+        },
+        "minio_latency_p95": {
+          "avg": 0.245,
+          "p95": 0.316,
+          "max": 0.34,
+          "n": 60
+        }
+      },
+      {
+        "stage": "c30",
+        "tfe_pod_cpu": {
+          "avg": 3.672,
+          "p95": 4.743,
+          "max": 5.1,
+          "n": 60
+        },
+        "tfe_pod_mem": {
+          "avg": 0.418,
+          "p95": 0.539,
+          "max": 0.58,
+          "n": 60
+        },
+        "pg_conn_ratio": {
+          "avg": 0.698,
+          "p95": 0.902,
+          "max": 0.97,
+          "n": 60
+        },
+        "redis_cpu": {
+          "avg": 0.223,
+          "p95": 0.288,
+          "max": 0.31,
+          "n": 60
+        },
+        "minio_latency_p95": {
+          "avg": 0.446,
+          "p95": 0.577,
+          "max": 0.62,
+          "n": 60
+        }
+      }
+    ],
+    "firstBottleneck": {
+      "resource": "postgres",
+      "query": "pg_conn_ratio",
+      "stage": "c25",
+      "value": 0.88,
+      "threshold": 0.85
+    }
+  },
+  "cleanup": {
+    "workspacesCreated": 1085,
+    "workspacesDeleted": 1085,
+    "forceDeleted": 0,
+    "leftover": 0,
+    "result": "clean"
+  },
+  "grafana": {
+    "annotations": {
+      "status": "ok",
+      "ids": [
+        8841,
+        8842,
+        8843,
+        8844,
+        8845,
+        8846
+      ]
+    }
+  },
+  "tfe": {
+    "address": "https://tfe.example.internal",
+    "version": "2.0.7",
+    "organization": "existing-org",
+    "apiRateLimit": 30
+  },
+  "workload": {
+    "profile": "hold-30s",
+    "artifactUrl": "https://artifactory.example.internal/artifactory/tfcap/tfcap-hold-30s-v1.tar.gz",
+    "artifactSha256": "9f2c41d0b7a85e63c1f04a2d7be9e8153a6c0d94f7b2e1a8c35d60f9ab714e2c",
+    "terraformVersion": "1.9.8",
+    "reuseWs": false
+  },
+  "harness": {
+    "k6Version": "1.4.0",
+    "host": "jump01",
+    "k6ExitCode": 0,
+    "startedAt": "2026-11-23T14:05:02Z",
+    "endedAt": "2026-11-23T15:53:22Z",
+    "scenarioDurationSec": 6360,
+    "clockSkewMs": 120
+  },
+  "config": {
+    "scenario": "tfe-capacity-ladder",
+    "version": 1,
+    "description": "Main ladder: baseline, then 10 to 30 concurrent runs of the hold-30s profile.",
+    "tfe": {
+      "address": "https://tfe.example.internal",
+      "organization": "existing-org",
+      "tokenEnv": "TFE_TOKEN"
+    },
+    "workload": {
+      "artifactUrl": "https://artifactory.example.internal/artifactory/tfcap/tfcap-hold-30s-v1.tar.gz",
+      "artifactSha256": "9f2c41d0b7a85e63c1f04a2d7be9e8153a6c0d94f7b2e1a8c35d60f9ab714e2c",
+      "terraformVersion": "1.9.8",
+      "runVariables": {
+        "mock_count": 20,
+        "hold_seconds": 30
+      }
+    },
+    "workspaces": {
+      "namePrefix": "tfcap",
+      "reuseWs": false,
+      "autoApply": true,
+      "executionMode": "remote",
+      "deleteAfterRun": true,
+      "keepOnFailure": false
+    },
+    "polling": {
+      "intervalSec": 4,
+      "jitter": 0.25
+    },
+    "limits": {
+      "maxRunWaitSec": 900,
+      "cancelBeforeDelete": true
+    },
+    "stages": [
+      {
+        "name": "baseline",
+        "role": "baseline",
+        "concurrency": 1,
+        "rampSec": 30,
+        "warmupSec": 60,
+        "holdSec": 1800
+      },
+      {
+        "name": "c10",
+        "role": "ladder",
+        "concurrency": 10,
+        "rampSec": 60,
+        "warmupSec": 120,
+        "holdSec": 900
+      },
+      {
+        "name": "c20",
+        "role": "ladder",
+        "concurrency": 20,
+        "rampSec": 90,
+        "warmupSec": 120,
+        "holdSec": 900
+      },
+      {
+        "name": "c25",
+        "role": "ladder",
+        "concurrency": 25,
+        "rampSec": 120,
+        "warmupSec": 120,
+        "holdSec": 900
+      },
+      {
+        "name": "c30",
+        "role": "ladder",
+        "concurrency": 30,
+        "rampSec": 120,
+        "warmupSec": 120,
+        "holdSec": 900
+      }
+    ],
+    "saturation": {
+      "queueWaitP50Sec": 30,
+      "runDurationP95VsBaseline": 1.5,
+      "throughputEfficiencyMin": 0.8,
+      "failureRateMax": 0.01,
+      "minRunsPerStage": 20
+    },
+    "abort": {
+      "failureRate": 0.2,
+      "any429": true
+    },
+    "grafana": {
+      "address": "https://grafana.example.internal",
+      "tokenEnv": "GRAFANA_TOKEN",
+      "datasourceUid": "prom-main",
+      "annotate": true,
+      "collectInfra": true,
+      "queriesFile": "config/infra-queries.json"
+    }
+  }
+}

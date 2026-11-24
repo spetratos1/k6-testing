@@ -1,299 +1,332 @@
-# Test results and retention
+# Test results and retention strategy
 
-Status: design, version 1. Replaces sections 10 and 11 of `tfe-capacity-test-design.md`. Tags:
+Status: design, version 2. Replaces sections 10 and 11 of `tfe-capacity-test-design.md`. Tags:
 **[F]** documented fact, **[R]** recommendation, **[V]** confirm in the pilot.
 
-A capacity test produces one decision — a safe concurrency, the knee it sits below, and the resource
-that gives out first — plus the evidence behind it. The output is built around that: one folder per
-run, one file that is the result, one file of raw per-run rows behind it. Nothing else is kept.
+**In short:** every run produces one dated folder with three files — `summary.json` (the result),
+`runs.csv` (one row per run), and `test.log` (the raw per-run log, including failure detail). Grafana
+is called only after the load stops, to copy infrastructure numbers into `summary.json` and to mark
+the stages on dashboards. Retention is manual.
 
-Prometheus here keeps only 12 hours of data, and no test runs longer than that initially. Two
-consequences: the infrastructure numbers are copied into the result folder at the end of the run (a
-single pull, always inside the window — they cannot be fetched back once the window passes), and
-retention of the results themselves is manual for now — results go in date-stamped folders and are
-deleted by hand.
+This version converges with a parallel proposal from the team: it adopts that proposal's auditable
+`summary.json` (per-stage S1–S4 criteria, a reasoned `analysis` block, an embedded effective config)
+and its concrete Grafana recipe, and keeps two things from the earlier draft that the parallel one
+lacked — failure detail captured *before* the workspace is deleted, and exact stage windows that come
+from the per-stage run model rather than a setup-marker offset.
 
-The jump host may call the Grafana HTTP API; Prometheus, the Kubernetes API, and the nodes stay out of
-scope. Section 1 is the spike that proves the Grafana access; the rest is the output design.
+Prometheus here keeps 12 hours of data and no test runs that long, so the infra numbers are pulled
+once at the end of the run, always inside the window.
 
-## 1. Grafana access: the spike
+## 1. Reading a metric and marking a stage through the Grafana API
 
-Three things were checked from the jump host: get a token, read a metric, write a time-range
-annotation. These are what the report step automates. `GRAFANA` is the base URL, `GRAFANA_TOKEN` the
-token.
+This is what the report step does after a run, and what you can do by hand to try it first.
 
-**Token.** Create a service account and a token for it (UI: Administration → Users and access →
-Service accounts; or `POST /api/serviceaccounts` then `POST /api/serviceaccounts/:id/tokens`). [R]
-Least privilege: `Viewer` can query a data source through the proxy; creating annotations needs
-`Editor` or a custom role with `annotations:create`. [V] confirm the annotation permission on your
-Grafana edition.
+**Token (once, by a Grafana admin).** [F] Grafana UI → Administration → Users and access → Service
+accounts → Add service account (e.g. `tfcap-test`, pick a role) → Add service account token → set an
+expiry → Generate, and copy it immediately. Querying a data source needs a role that can query it;
+creating annotations needs an editor-level role or a custom role with the annotation permission [V].
+The scenario stores only the env-var *name* (`grafana.token_env`, default `GRAFANA_TOKEN`); the token
+lives in the environment and every call sends `Authorization: Bearer <token>` [F].
 
-**Find the metric.** A metric is a data-source `uid` plus a PromQL expression. Read both from the
-panel that already shows it: panel menu → Inspect → Panel JSON (`datasource.uid` and the `expr` under
-`targets`). List uids with `GET /api/datasources`. Record each `{uid, expr}` in
-`config/infra-queries.json`.
+**Find the query behind a panel.** Open the dashboard panel → Inspect → Query (or Panel JSON) and copy
+the data-source `uid` and the expression. Three fixes before the expression works against the API [R]:
+replace dashboard variables (`$namespace`, `$pod`) with real values or `.*`; replace macros
+(`$__rate_interval`) with a fixed value like `2m`; and make it return **one series** by wrapping it in
+`max(...)` or `sum(...)` (if it still returns several, the harness takes the max at each timestamp).
+Record each `{id, resource, expr, breach_above}` in `config/infra-queries.json`.
 
-**Read a metric** through the data-source proxy, which passes straight to Prometheus. `START`/`END`
-are Unix seconds spanning a stage's measure window, `STEP` seconds.
-
-```bash
-curl -s -G -H "Authorization: Bearer $GRAFANA_TOKEN" \
-  "$GRAFANA/api/datasources/proxy/uid/$DS_UID/api/v1/query_range" \
-  --data-urlencode 'query=sum(pg_stat_activity_count)/max(pg_settings_max_connections)' \
-  --data-urlencode "start=$START" --data-urlencode "end=$END" --data-urlencode "step=$STEP"
-# {"status":"success","data":{"resultType":"matrix","result":[{"values":[[1700000000,"0.62"], ...]}]}}
-```
-
-The report step runs one of these per stage per query and reduces the series to avg / p95 / max.
-
-**Write a time-range annotation** — an organization annotation (no `dashboardUID`) with tags; a region
-has both `time` and `timeEnd`, in epoch milliseconds.
+**Query the metric** — `POST /api/ds/query` with the data-source uid; `from`/`to` are epoch ms. [F]
+endpoint and body shape; [V] the Prometheus fields (`expr`, `range`) on your Grafana version.
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $GRAFANA_TOKEN" -H "Content-Type: application/json" \
-  "$GRAFANA/api/annotations" -d '{
-    "time": 1700000000000, "timeEnd": 1700000900000,
-    "tags": ["tfcap","tfcap:'"$TEST_ID"'","tfcap:stage:c15"],
-    "text": "tfcap '"$TEST_ID"' stage c15" }'
-# {"id":4412,"message":"Annotation added"}
+FROM=$(date -d '30 minutes ago' +%s%3N); TO=$(date +%s%3N)
+curl -sS -X POST "$GRAFANA/api/ds/query" \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "from":"'$FROM'", "to":"'$TO'", "queries":[{
+        "refId":"A", "datasource":{"uid":"prom-main"},
+        "expr":"max(sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"tfe\",pod=~\"terraform-enterprise-.*\"}[2m])))",
+        "range":true, "intervalMs":15000, "maxDataPoints":1000 }] }'
 ```
 
-It shows on any dashboard that has an annotation query filtering on the `tfcap` tag (dashboard
-Settings → Annotations, Filter by Tags = `tfcap`); add that once per dashboard and every run's regions
-appear without the harness knowing the dashboard. List or remove a run's markers with
-`GET /api/annotations?tags=tfcap:$TEST_ID` and `DELETE /api/annotations/:id`. [V] Grafana 13 is moving
-`/api` to `/apis`; the legacy paths used here still work — keep them in one place in the code.
+The response holds `results.A.frames[0].data.values` as two arrays — timestamps and values [F]; the
+report step reduces the value array to `avg`, `p95`, `max` over the stage window:
 
-## 2. The output
+```json
+{ "results": { "A": { "frames": [ { "data": { "values": [
+  [1763906700000, 1763906715000, 1763906730000], [0.91, 0.94, 0.97] ] } } ] } } }
+```
 
-One folder per run, named with the date so it sorts and prunes by hand:
-`results/<YYYYMMDD-HHMMSS>-<id>/`. Inside it, two files are the result:
+(The data-source proxy — `GET /api/datasources/proxy/uid/:uid/api/v1/query_range` — is a simpler way
+to run one PromQL by hand and returns native Prometheus JSON; `/api/ds/query` is used by the harness
+because it carries the data-source routing and can batch queries.)
 
-- **`summary.json`** — the complete result. Everything needed to read, trust, and reproduce the run
-  is in here: the verdict, the per-stage metrics with their infrastructure numbers, and the
-  provenance. This is the one file a tool or a person reads.
-- **`runs.jsonl`** — one JSON object per run, the raw rows behind the per-stage percentiles. Kept
-  because a summary can't hold hundreds of runs and because it lets anyone recompute a statistic
-  without k6 or Grafana.
+**Mark a stage** — `POST /api/annotations`, a region with `time`+`timeEnd` in epoch ms and `tfcap` tags:
 
-That is the whole result. There is deliberately no separate `meta`, `infra`, `annotations`,
-`cleanup`, or per-stage file — that information is sections inside `summary.json`, not copies of it in
-other files. A readable table and the raw k6 sample stream are available on demand but not stored: a
-`--report` flag renders `summary.json` as text, and `--raw` keeps k6's full JSON output for debugging
-a harness problem. The wrapper and k6 also write a plain `run.log` for troubleshooting; it is a log,
-not a result.
+```bash
+curl -sS -X POST "$GRAFANA/api/annotations" \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "time":1763906700000, "timeEnd":1763907600000,
+        "tags":["tfcap","tfcap:20261123-140500-a3f9","tfcap:stage:c25"],
+        "text":"tfcap 20261123-140500-a3f9: stage c25, N=25" }'
+```
 
-### `summary.json`
+An organization annotation (no `dashboardUID`) shows on any dashboard with an annotation query
+filtered on the tag `tfcap`. [V] The current docs describe a newer resource-style annotations API
+(`/apis/annotation.grafana.app/...`); use whichever your Grafana serves and keep the path in one place.
 
-A full run: a c1 warmup/baseline, a 10→20→30 ladder stopped early at the knee, and a return-to-baseline
-at c10. The numbers tell one story — throughput flattens from c20 to c30 while p95 run duration jumps
-and the Postgres connection ratio crosses its 0.85 threshold, so the knee is c30 and the safe
-concurrency is 24.
+**Failure modes never touch the test.** If the token is missing or a query errors, the result is still
+written with `infra.status` = `unavailable` or `partial`; the Grafana calls happen only after the load
+has stopped.
+
+## 2. What the result answers
+
+`summary.json` answers five questions:
+
+| Question | Field |
+|---|---|
+| Can I trust it? | `status`, `warnings`, per-stage `valid`, `infra.status`, `cleanup.result` |
+| Where is the knee? | `analysis.knee_stage`, `first_breached`, `confirmed_by` |
+| What concurrency is safe? | `analysis.safe_operating_concurrency`, `headroom`, `confidence` |
+| When does queueing start? | per-stage `durations_sec.plan_queue`/`apply_queue`, criterion `S1` |
+| What saturates first? | `infra.first_bottleneck`, `infra.per_stage` |
+
+Rules for every number: percentiles carry `n`; a stage with fewer than `min_completions_per_stage`
+measured runs is `valid:false`, not hidden; durations come from TFE `status-timestamps`, not the poll
+loop; `timed_out` runs are counted but excluded from the duration percentiles; warmup is excluded from
+the window; no p99 under 100 samples. `observed.executing_avg` plus `observed.waiting_avg` should track
+the target (Little's law) — it is the proof the stage actually held its concurrency, and a stage where
+executing sags below target with an empty queue is the jump host or API, not TFE, and is marked
+invalid. `first_bottleneck` is a pointer (the first resource over its `breach_above` at or before the
+knee), not proof; the evidence is `infra.per_stage`.
+
+## 3. Files
+
+```
+results/<test-id>/            test-id = YYYYMMDD-HHMMSS-<4hex> (UTC) — folders sort and prune by date
+  summary.json    the result: analysis, per-stage statistics, infra, cleanup, effective config
+  runs.csv        one row per run (spreadsheets, recomputation, debugging)
+  test.log        raw k6 log: one TFERUN line per finished run, TFEERR lines with failure detail
+```
+
+| File | Written by | How |
+|---|---|---|
+| `test.log` | the load step (k6 `--log-output=file=`) | one `TFERUN,<fields>` line per finished run; on a failure, a `TFEERR,<run_id>,<message>` line plus a short plan/apply log tail — **fetched before the workspace is deleted**, which is the only moment it exists |
+| `runs.csv` | wrapper | header + `grep '^TFERUN,' test.log | cut -d, -f2-`; one derived file, no second write path |
+| `summary.json` | report step | merges the per-stage summaries, the run lines, and the Grafana pull into the one result (§4) |
+
+Per-run columns: `stage, vu, seq, workspace, run_id, outcome, created_at, pending_sec, plan_queue_sec,
+plan_sec, apply_queue_sec, apply_sec, run_sec, timed_out, force_deleted, has_changes`. The error text
+is not a CSV column (it is multi-line); it lives in `test.log` keyed by `run_id`.
+
+## 4. How the result is generated
+
+```
+run_test.sh
+  validate -> for each stage (and return-to-baseline):
+      load step (one k6 run)  -> per-stage summary + TFERUN/TFEERR lines in test.log
+      knee check              -> early-stop decision; wrapper records the stage's exact window
+  cleanup (always)            -> force-delete the run's workspaces
+  report step                 -> pull infra per window, post annotations, write summary.json
+  runs.csv from test.log
+```
+
+**How k6 actually writes files.** k6 can write files from exactly one place: `handleSummary(data)`,
+called once when a run ends — including when a threshold aborted it [F]. It returns a map of path →
+content; VU code, `setup`, and `teardown` cannot write files. Two consequences shape everything. The
+per-stage numbers come from `data.metrics[<name>].values` (`count`, `avg`, `min`, `med`, `max`, and
+exactly the percentiles set in `summary_trend_stats`); because each stage is its own `k6 run`, that
+run's `handleSummary` reads its own `data` and writes the stage summary directly — no cross-run
+aggregation and no tag-splitting, which is the reason the ladder is one run per stage. And because a
+VU cannot write files, each VU `console.log`s a `TFERUN` line per finished run (and a `TFEERR` line on
+failure); `runs.csv` and the per-run detail are parsed from those afterward.
+
+`handleSummary` also prints the human view to the terminal, so there is no `report.md` to keep in sync
+(§5 shows it). The final `summary.json` is itself written through a `handleSummary` (the report step is
+a short k6 run; equivalently a small script — same mechanism). The only output not written this way is
+the optional raw sample stream, `--out json=metrics.json.gz`, added by hand for debugging k6 itself.
+
+**Exact windows (kept from the earlier draft).** Each stage is a separate run, so the wrapper records
+its real start/end wall-clock; there is no `TFESETUP_DONE` marker or offset arithmetic to reconstruct,
+and the windows handed to the Grafana queries and annotations are exact.
+
+**Grafana after the fact, inside 12 h.** During the ladder the only external calls are to TFE. The
+report step touches Grafana once, at the end, from windows already on disk, so a slow or failed query
+never perturbs a measurement; `--report` can re-run it against a finished folder, but only within ~12 h
+while Prometheus still holds the data (the numbers already in `summary.json` stay regardless).
+
+**Degradation.** `handleSummary` firing on abort means an aborted stage still leaves its file; the
+logged `TFERUN` lines mean a mid-ladder kill still yields a `status:"incomplete"` summary (counts and
+completed stages, no knee); and if the report step itself fails, the wrapper writes a minimal
+`summary.json` from the per-stage files, so a result always exists.
+
+## 5. Complete example
+
+Synthetic numbers, internally consistent (Little's law holds within ~8% per stage; throughput,
+efficiency, and the signals are computed from the counts). Not measurements of any real TFE.
+
+Terminal view, printed by `handleSummary` at the end:
+
+```
+TFE capacity test 20261123-140500-a3f9   status: completed   scenario: tfe-capacity-ladder
+stage       N  runs  runs/min   eff  queue p50   run p50   run p95   fail  signals
+baseline    1    30      1.00  1.00       1.6s      56.0      59.0   0.0%  -
+c10        10   144      9.60  0.96       1.9s      58.0      64.0   0.0%  -
+c20        20   263     17.53  0.88       3.4s      62.0      72.0   0.0%  -
+c25        25   263     17.53  0.70      14.5s      78.0      96.0   0.0%  S2,S3
+c30        30   258     17.20  0.57      27.0s      96.0     128.0   1.6%  S2,S3,S4
+knee: c25 (S2,S3; confirmed by c30)   safe: 20 (low confidence, 1 repeat)
+first bottleneck: postgres pg_conn_ratio 0.88 > 0.85 at c25
+infra: ok   cleanup: clean (1085/1085)   warnings: 2
+```
+
+`summary.json` — `baseline` and the knee stage `c25` shown in full; `c10`, `c20`, `c30` have the same
+shape; `infra.per_stage` carries all five:
 
 ```jsonc
 {
-  "test_id": "20261123-150000-a1",
-  "scenario": "state-heavy",
-  "status": "stopped_knee",               // completed | stopped_knee | incomplete | aborted
-  "started_at": "2026-11-23T15:00:12Z", "ended_at": "2026-11-23T16:28:40Z",
-  "host": "jump-01", "k6_version": "0.54.0", "tfe_version": "v2.0.7",
-  "workload": { "config": "state-heavy",
-                "tarball_url": "https://artifactory.example.internal/tfe-loadtest/state-heavy-v1.tar.gz",
-                "tarball_sha256": "9f2c…", "terraform_version": "1.9.8",
-                "run_variables": { "mock_count": "50", "payload_kb": "100", "hold_seconds": "30" } },
-  "observed_config": { "tfe_capacity_concurrency": 20, "terraform_enterprise_replicas": 3, "ceiling": 60 },
-  "warnings": [],
-  "stages": [
-    { "label": "c1", "concurrency": 1, "role": "warmup", "regime": "below_ceiling",
-      "window": { "start": "2026-11-23T15:01:00Z", "end": "2026-11-23T15:16:00Z" },
-      "valid": true, "invalid_reason": null,
-      "runs": { "created": 12, "completed": 12, "failed": 0 }, "throughput_per_min": 0.8,
-      "queue_depth": { "avg": 0.0, "max": 0, "p95": 0 },
-      "durations_sec": {
-        "plan_queue": { "n": 12, "p50": 0.9, "p90": 1.4, "p95": 1.6, "max": 2 },
-        "plan":        { "n": 12, "p50": 28, "p90": 33, "p95": 35, "max": 38 },
-        "apply_queue": { "n": 12, "p50": 0.6, "p90": 1.2, "p95": 1.5, "max": 2 },
-        "apply":       { "n": 12, "p50": 22, "p90": 26, "p95": 28, "max": 31 },
-        "run":         { "n": 12, "p50": 58, "p90": 66, "p95": 70, "max": 78 } },
-      "failures": [],
-      "infra": { "postgres": { "avg": 0.12, "p95": 0.14, "max": 0.15 }, "cpu": { "max": 0.18 }, "memory": { "max": 0.50 } } },
-
-    { "label": "c10", "concurrency": 10, "role": "ladder", "regime": "below_ceiling",
-      "window": { "start": "2026-11-23T15:17:00Z", "end": "2026-11-23T15:34:00Z" },
-      "valid": true, "invalid_reason": null,
-      "runs": { "created": 40, "completed": 40, "failed": 0 }, "throughput_per_min": 2.0,
-      "queue_depth": { "avg": 0.1, "max": 1, "p95": 1 },
-      "durations_sec": {
-        "plan_queue": { "n": 40, "p50": 1.2, "p90": 2.5, "p95": 3.0, "max": 6 },
-        "plan":        { "n": 40, "p50": 30, "p90": 36, "p95": 40, "max": 52 },
-        "apply_queue": { "n": 40, "p50": 0.8, "p90": 2.0, "p95": 3.0, "max": 5 },
-        "apply":       { "n": 40, "p50": 24, "p90": 28, "p95": 31, "max": 40 },
-        "run":         { "n": 40, "p50": 62, "p90": 74, "p95": 78, "max": 95 } },
-      "failures": [],
-      "infra": { "postgres": { "avg": 0.38, "p95": 0.42, "max": 0.45 }, "cpu": { "max": 0.40 }, "memory": { "max": 0.55 } } },
-
-    { "label": "c20", "concurrency": 20, "role": "ladder", "regime": "below_ceiling",
-      "window": { "start": "2026-11-23T15:35:00Z", "end": "2026-11-23T15:52:00Z" },
-      "valid": true, "invalid_reason": null,
-      "runs": { "created": 64, "completed": 63, "failed": 1 }, "throughput_per_min": 3.4,
-      "queue_depth": { "avg": 0.6, "max": 4, "p95": 3 },
-      "durations_sec": {
-        "plan_queue": { "n": 63, "p50": 1.6, "p90": 3.5, "p95": 4.2, "max": 9 },
-        "plan":        { "n": 63, "p50": 33, "p90": 42, "p95": 48, "max": 61 },
-        "apply_queue": { "n": 63, "p50": 1.1, "p90": 2.8, "p95": 3.4, "max": 7 },
-        "apply":       { "n": 63, "p50": 25, "p90": 30, "p95": 33, "max": 45 },
-        "run":         { "n": 63, "p50": 72, "p90": 90, "p95": 95, "max": 120 } },
-      "failures": [ { "reason": "errored", "count": 1 } ],
-      "infra": { "postgres": { "avg": 0.66, "p95": 0.71, "max": 0.74 }, "cpu": { "max": 0.58 }, "memory": { "max": 0.60 } } },
-
-    { "label": "c30", "concurrency": 30, "role": "ladder", "regime": "below_ceiling",
-      "window": { "start": "2026-11-23T15:53:00Z", "end": "2026-11-23T16:10:00Z" },
-      "valid": true, "invalid_reason": null,
-      "runs": { "created": 60, "completed": 59, "failed": 1 }, "throughput_per_min": 3.6,
-      "queue_depth": { "avg": 3.1, "max": 9, "p95": 7 },
-      "durations_sec": {
-        "plan_queue": { "n": 59, "p50": 6,  "p90": 14, "p95": 18, "max": 32 },
-        "plan":        { "n": 59, "p50": 40, "p90": 55, "p95": 62, "max": 80 },
-        "apply_queue": { "n": 59, "p50": 5,  "p90": 12, "p95": 16, "max": 28 },
-        "apply":       { "n": 59, "p50": 28, "p90": 36, "p95": 41, "max": 58 },
-        "run":         { "n": 59, "p50": 110, "p90": 132, "p95": 140, "max": 190 } },
-      "failures": [ { "reason": "errored", "count": 1 } ],
-      "infra": { "postgres": { "avg": 0.88, "p95": 0.92, "max": 0.94 }, "cpu": { "max": 0.76 }, "memory": { "max": 0.66 } } },
-
-    { "label": "c10-return", "concurrency": 10, "role": "return", "regime": "below_ceiling",
-      "window": { "start": "2026-11-23T16:11:00Z", "end": "2026-11-23T16:28:00Z" },
-      "valid": true, "invalid_reason": null,
-      "runs": { "created": 38, "completed": 38, "failed": 0 }, "throughput_per_min": 1.9,
-      "queue_depth": { "avg": 0.1, "max": 1, "p95": 1 },
-      "durations_sec": {
-        "plan_queue": { "n": 38, "p50": 1.3, "p90": 2.6, "p95": 3.1, "max": 6 },
-        "plan":        { "n": 38, "p50": 31, "p90": 37, "p95": 41, "max": 54 },
-        "apply_queue": { "n": 38, "p50": 0.9, "p90": 2.1, "p95": 3.1, "max": 5 },
-        "apply":       { "n": 38, "p50": 25, "p90": 29, "p95": 32, "max": 42 },
-        "run":         { "n": 38, "p50": 64, "p90": 77, "p95": 82, "max": 98 } },
-      "failures": [],
-      "infra": { "postgres": { "avg": 0.40, "p95": 0.44, "max": 0.47 }, "cpu": { "max": 0.41 }, "memory": { "max": 0.56 } } }
+  "schema_version": 2,
+  "test_id": "20261123-140500-a3f9",
+  "status": "completed",
+  "warnings": [
+    "Single ladder repeat: treat the knee as a hypothesis; repeat 2-3 times at different hours.",
+    "No return-to-baseline run in this invocation."
   ],
-  "result": {
-    "knee_concurrency": 30,
-    "limiting_signal": "p95_run_duration_rise",
-    "safe_operating_concurrency": 24,
-    "first_bottleneck": { "resource": "postgres", "query": "pg_conn_ratio", "stage": "c30", "value": 0.92, "threshold": 0.85 },
-    "baseline_drift_pct": 5.1,
-    "notes": "Knee below ceiling (60) => infrastructure-limited. Postgres connection ratio crossed 0.85 at c30 while p95 run duration rose 79% over the c10 baseline and throughput flattened (c20 3.4 -> c30 3.6/min). Ladder stopped after c30; c10-return drift +5.1%."
+  "analysis": {
+    "baseline_stage": "baseline", "knee_stage": "c25", "knee_concurrency": 25,
+    "first_breached": [ { "stage": "c25", "signals": ["S2", "S3"] } ],
+    "confirmed_by": "c30",
+    "safe_operating_concurrency": 20,
+    "headroom": { "resource": "postgres", "stage": "c20", "value": 0.58, "threshold": 0.85, "headroom_pct": 31.8 },
+    "confidence": "low", "repeats": 1,
+    "method": "highest ladder stage below the knee where S1-S4 all pass and the first-bottleneck resource is >=25% below its threshold"
   },
-  "grafana": { "status": "ok", "datasource_uid": "prom", "queries_sha256": "e3b0c4…", "annotation_ids": [4410, 4411, 4412, 4413, 4414] },
-  "cleanup": { "workspaces_deleted": 214, "orphans": 0, "ok": true }
+  "stages": [
+    { "index": 0, "name": "baseline", "role": "baseline", "target_concurrency": 1,
+      "window": { "start": "2026-11-23T14:05:02Z", "measure_start": "2026-11-23T14:06:32Z", "end": "2026-11-23T14:36:32Z" },
+      "valid": true, "invalid_reason": null,
+      "runs": { "created": 33, "measured": 30, "applied": 30, "errored": 0, "timed_out": 0, "canceled": 0, "no_changes": 0 },
+      "throughput_per_min": 1.0, "throughput_efficiency": 1.0,
+      "observed": { "waiting_avg": 0.05, "executing_avg": 0.92 },
+      "durations_sec": {
+        "pending":     { "n": 30, "p50": 0.3, "p90": 0.4, "p95": 0.6, "max": 0.9 },
+        "plan_queue":  { "n": 30, "p50": 1.6, "p90": 1.7, "p95": 1.7, "max": 1.8 },
+        "plan":        { "n": 30, "p50": 13.8, "p90": 14.6, "p95": 15.2, "max": 17.9 },
+        "apply_queue": { "n": 30, "p50": 1.4, "p90": 1.4, "p95": 1.5, "max": 1.6 },
+        "apply":       { "n": 30, "p50": 38.5, "p90": 40.8, "p95": 42.4, "max": 50.1 },
+        "run":         { "n": 30, "p50": 56, "p90": 58.0, "p95": 59.0, "max": 63.0 } },
+      "workspace_ops_sec": { "create": { "p50": 1.2, "p95": 2.1, "max": 3.4 }, "delete": { "p50": 1.4, "p95": 2.6, "max": 4.8 } },
+      "api": { "requests": 782, "status_429": 0, "status_5xx": 0 },
+      "criteria": null },
+
+    // c10, c20, c30: same shape
+
+    { "index": 3, "name": "c25", "role": "ladder", "target_concurrency": 25,
+      "window": { "start": "2026-11-23T15:13:02Z", "measure_start": "2026-11-23T15:17:02Z", "end": "2026-11-23T15:32:02Z" },
+      "valid": true, "invalid_reason": null,
+      "runs": { "created": 299, "measured": 263, "applied": 263, "errored": 0, "timed_out": 0, "canceled": 0, "no_changes": 0 },
+      "throughput_per_min": 17.53, "throughput_efficiency": 0.70,
+      "observed": { "waiting_avg": 5.83, "executing_avg": 17.95 },
+      "durations_sec": {
+        "pending":     { "n": 263, "p50": 0.5, "p90": 0.8, "p95": 1.0, "max": 1.5 },
+        "plan_queue":  { "n": 263, "p50": 14.5, "p90": 16.7, "p95": 17.8, "max": 21.9 },
+        "plan":        { "n": 263, "p50": 17.0, "p90": 18.0, "p95": 18.7, "max": 22.1 },
+        "apply_queue": { "n": 263, "p50": 4.5, "p90": 5.2, "p95": 5.5, "max": 6.8 },
+        "apply":       { "n": 263, "p50": 41.5, "p90": 44.0, "p95": 45.7, "max": 54.0 },
+        "run":         { "n": 263, "p50": 78, "p90": 90.0, "p95": 96.0, "max": 118.0 } },
+      "workspace_ops_sec": { "create": { "p50": 1.2, "p95": 2.1, "max": 3.4 }, "delete": { "p50": 1.4, "p95": 2.6, "max": 4.8 } },
+      "api": { "requests": 8813, "status_429": 0, "status_5xx": 1 },
+      "criteria": {
+        "S1": { "name": "median plan queue wait (s)", "value": 14.5, "threshold": 30,  "breached": false },
+        "S2": { "name": "p95 run duration vs baseline", "value": 1.63, "threshold": 1.5, "breached": true },
+        "S3": { "name": "throughput efficiency",       "value": 0.70, "threshold": 0.8, "breached": true },
+        "S4": { "name": "failure rate",                "value": 0.0,  "threshold": 0.01, "breached": false } } }
+  ],
+  "infra": {
+    "status": "ok",
+    "source": { "grafana": "https://grafana.example.internal", "datasource_uid": "prom-main", "queries_sha256": "e3b0c4…" },
+    "queries": [
+      { "id": "tfe_pod_cpu",  "resource": "cpu",      "unit": "cores", "breach_above": 6.0 },
+      { "id": "pg_conn_ratio","resource": "postgres", "unit": "ratio", "breach_above": 0.85 },
+      { "id": "minio_latency_p95", "resource": "object_store", "unit": "seconds", "breach_above": 1.0 }
+    ],
+    "per_stage": [
+      { "stage": "baseline", "tfe_pod_cpu": { "avg": 0.65, "p95": 0.84, "max": 0.90 }, "pg_conn_ratio": { "avg": 0.09, "p95": 0.11, "max": 0.12 }, "minio_latency_p95": { "avg": 0.04, "p95": 0.06, "max": 0.06 } },
+      { "stage": "c10", "tfe_pod_cpu": { "avg": 1.73, "p95": 2.23, "max": 2.40 }, "pg_conn_ratio": { "avg": 0.22, "p95": 0.29, "max": 0.31 }, "minio_latency_p95": { "avg": 0.07, "p95": 0.08, "max": 0.09 } },
+      { "stage": "c20", "tfe_pod_cpu": { "avg": 2.81, "p95": 3.63, "max": 3.90 }, "pg_conn_ratio": { "avg": 0.42, "p95": 0.54, "max": 0.58 }, "minio_latency_p95": { "avg": 0.11, "p95": 0.14, "max": 0.15 } },
+      { "stage": "c25", "tfe_pod_cpu": { "avg": 3.31, "p95": 4.28, "max": 4.60 }, "pg_conn_ratio": { "avg": 0.63, "p95": 0.82, "max": 0.88 }, "minio_latency_p95": { "avg": 0.25, "p95": 0.32, "max": 0.34 } },
+      { "stage": "c30", "tfe_pod_cpu": { "avg": 3.67, "p95": 4.74, "max": 5.10 }, "pg_conn_ratio": { "avg": 0.70, "p95": 0.90, "max": 0.97 }, "minio_latency_p95": { "avg": 0.45, "p95": 0.58, "max": 0.62 } }
+    ],
+    "first_bottleneck": { "resource": "postgres", "query": "pg_conn_ratio", "stage": "c25", "value": 0.88, "threshold": 0.85 }
+  },
+  "cleanup": { "workspaces_created": 1085, "workspaces_deleted": 1085, "force_deleted": 0, "leftover": 0, "result": "clean" },
+  "grafana": { "annotations": { "status": "ok", "ids": [8841, 8842, 8843, 8844, 8845, 8846] } },
+  "tfe": { "address": "https://tfe.example.internal", "version": "2.0.7", "organization": "existing-org", "api_rate_limit": 30 },
+  "workload": { "config": "hold-30s", "tarball_url": "https://artifactory.example.internal/tfcap/hold-30s-v1.tar.gz",
+                "tarball_sha256": "9f2c41d0…", "terraform_version": "1.9.8" },
+  "harness": { "k6_version": "1.4.0", "host": "jump01", "k6_exit_code": 0,
+               "started_at": "2026-11-23T14:05:02Z", "ended_at": "2026-11-23T15:53:22Z",
+               "scenario_duration_sec": 6360, "clock_skew_ms": 120 },
+  "config": { "...": "the effective scenario after defaults (see §Configuration format)" }
 }
 ```
 
-`grafana.status` is `ok`, `partial` (some queries failed — the failures and their errors are noted in
-`warnings`), `unavailable`, or `disabled`. Every percentile carries `n`; a stage below
-`min_completions_per_stage` is marked `valid: false`. Durations come from TFE's `status-timestamps`,
-not the poll loop; `timed_out` runs are counted but excluded from the percentiles; warmup is excluded
-from the window; no p99 under 100 samples. `first_bottleneck` is a heuristic — the resource whose
-`breach_above` threshold is crossed at the lowest stage at or before the knee — and the per-stage
-`infra` numbers are the evidence to check it.
-
-### `runs.jsonl`
-
-One line per run, across all stages. A failed run has a terminal `outcome` and null phase times past
-the point it stopped; a `timed_out` run is kept (so it is counted) but excluded from the percentiles.
-
-```json
-{"stage":"c10","vu":3,"seq":4,"workspace":"k6cap-20261123-150000-a1-vu3-4","run_id":"run-5tQ","outcome":"applied","created_at":"2026-11-23T15:18:03Z","finished_at":"2026-11-23T15:19:09Z","plan_queue_sec":1.1,"plan_sec":31.4,"apply_queue_sec":0.7,"apply_sec":23.9,"run_sec":66.0,"timed_out":false,"has_changes":true}
-{"stage":"c20","vu":11,"seq":9,"workspace":"k6cap-20261123-150000-a1-vu11-9","run_id":"run-8kR","outcome":"applied","created_at":"2026-11-23T15:41:22Z","finished_at":"2026-11-23T15:42:54Z","plan_queue_sec":2.0,"plan_sec":44.1,"apply_queue_sec":1.3,"apply_sec":30.2,"run_sec":92.0,"timed_out":false,"has_changes":true}
-{"stage":"c20","vu":6,"seq":10,"workspace":"k6cap-20261123-150000-a1-vu6-10","run_id":"run-2mD","outcome":"errored","created_at":"2026-11-23T15:43:10Z","finished_at":"2026-11-23T15:44:01Z","plan_queue_sec":2.4,"plan_sec":48.0,"apply_queue_sec":null,"apply_sec":null,"run_sec":51.0,"timed_out":false,"has_changes":true}
-{"stage":"c30","vu":22,"seq":7,"workspace":"k6cap-20261123-150000-a1-vu22-7","run_id":"run-9wF","outcome":"applied","created_at":"2026-11-23T15:55:40Z","finished_at":"2026-11-23T15:58:50Z","plan_queue_sec":17.2,"plan_sec":61.0,"apply_queue_sec":15.1,"apply_sec":40.4,"run_sec":190.0,"timed_out":false,"has_changes":true}
-{"stage":"c30","vu":5,"seq":8,"workspace":"k6cap-20261123-150000-a1-vu5-8","run_id":"run-1xZ","outcome":"timed_out","created_at":"2026-11-23T15:59:05Z","finished_at":null,"plan_queue_sec":18.0,"plan_sec":null,"apply_queue_sec":null,"apply_sec":null,"run_sec":null,"timed_out":true,"has_changes":null}
-```
-
-### Comparing runs
-
-A folder is one scenario run. With retention manual, comparison is manual too: the dated folders sort
-by time, and each `result` block is the one-line verdict. Two runs, two scenarios:
+`runs.csv` excerpt (a real file has ~1,100 rows; the c30 errored row's error text is in `test.log`):
 
 ```
-results/
-  20261123-150000-a1/   state-heavy  -> knee 30, safe 24, bottleneck postgres
-  20261123-181500-b7/   plan-heavy   -> knee 20, safe 16, bottleneck cpu
+stage,vu,seq,workspace,run_id,outcome,created_at,pending_sec,plan_queue_sec,plan_sec,apply_queue_sec,apply_sec,run_sec,timed_out,force_deleted,has_changes
+c20,12,4,k6cap-20261123-140500-a3f9-v12-i4,run-506bf2ef,applied,2026-11-23T15:01:33Z,0.4,3.5,14.2,2.1,38.8,59.4,false,false,true
+c25,18,3,k6cap-20261123-140500-a3f9-v18-i3,run-faecbd38,applied,2026-11-23T15:18:32Z,0.5,14.9,18.6,4.8,40.6,79.8,false,false,true
+c30,14,4,k6cap-20261123-140500-a3f9-v14-i4,run-f1d69ed6,errored,2026-11-23T15:40:17Z,0.6,27.3,20.5,,,48.8,false,false,true
+```
+```
+# matching line in test.log:
+TFEERR,run-f1d69ed6,apply errored: creating local_file: pq: remaining connection slots are reserved for non-replication superuser connections
 ```
 
-```bash
-for d in results/*/; do
-  jq -c '{id:.test_id, scn:.scenario, safe:.result.safe_operating_concurrency, bn:.result.first_bottleneck.resource}' "$d/summary.json"
-done
-```
+How to read it: per-run time grows from 56 s at N=1 to 62 s at N=20, then 78 s at N=25, while
+throughput stays ~17.5 runs/min — more slots stop producing more runs, the knee. Postgres connections
+cross 0.85 at the same stage (0.88) while CPU and object storage stay under theirs. The recommendation
+is 20, the highest stage below the knee where all signals pass and Postgres still has ~32% headroom;
+confidence is low with one repeat.
 
-## 3. How it is generated
+## 6. Retention (manual)
 
-The result is a function of the run folder. The pieces that produce it, by responsibility — some exist
-as scaffolding, the report step and the Grafana client are what remain to build:
+Nothing is deleted automatically and there is no retention tooling. A test is a folder of three files;
+`summary.json` and `runs.csv` are small (tens to a few hundred KB), `test.log` is the largest (order
+of MB [V]). Delete a folder to drop a test. Keep the folders you rely on — the baseline run and the
+run behind the recommended concurrency — and copy a finished folder somewhere team-owned; the jump
+host is not a safe place for the only copy. Compare tests by opening their `summary.json` (the dated
+folder names sort by time). Grafana annotations stay in Grafana, tagged `tfcap:<test-id>`; delete them
+there if you want them gone (ids are under `grafana.annotations.ids`). Results carry addresses, org and
+workspace names, and infra numbers but no tokens; treat the folder as internal (`umask 027`) and keep
+`results/` out of shared repos.
 
-| Piece | Responsibility | State |
-|---|---|---|
-| Wrapper | order the run; record each stage's exact wall-clock window; read Grafana clock skew once at start; create the dated folder (`umask 027`) | scaffolded |
-| Validator | reject a malformed scenario before anything runs | built |
-| Load step (one k6 run per stage) | hold C concurrent run lifecycles for the dwell; emit k6 metrics; write one `runs.jsonl` line per finished run | scaffolded |
-| Knee check | after each stage, decide whether the knee is confirmed (early stop) | scaffolded |
-| Cleanup | force-delete the run's workspaces | scaffolded |
-| **Report step** | **to build** — read the folder, pull infra per stage window and post annotations from the recorded windows (Section 1), and write `summary.json` | not built |
+## 7. Divergence from the parallel proposal
 
-Order: validate → for each stage { load, knee check, wrapper records the window } → cleanup → report
-step. During the ladder the only external calls are to TFE. Grafana is touched once, at the end, by
-the report step, from windows already on disk — so a slow or failed query never perturbs a
-measurement. Initially no test runs longer than the 12-hour Prometheus window, so a single pull at the
-end always falls inside it; the only rule is not to defer the report — `--report` can re-run against a
-finished folder, but it recovers infra only within ~12 hours of the run, after which the live metrics
-are gone (the numbers already captured in `summary.json` remain).
+Adopted from it: the auditable `summary.json` (per-stage S1–S4, `analysis` with headroom/confidence/
+method, `api`/`workspace_ops`, embedded `config`, `harness`), the terminal table as the human view, and
+the step-by-step Grafana recipe with the variable/macro/one-series fixes. Kept from the earlier draft,
+which that proposal lacked: the failure error + log tail captured **before** the workspace is deleted
+(a capacity symptom vs a workload bug is otherwise unrecoverable), and **exact stage windows** from the
+per-stage run model instead of a `TFESETUP_DONE` offset. The two proposals share the same `summary.json`
+shape, so the only real difference left is how stages are driven (one run per stage here vs one
+ramping-vus run), which does not change the result format.
 
-Because the per-run rows are logged during each stage, a kill mid-ladder still leaves `runs.jsonl` and
-the finished stages; the report step then writes a `status: "incomplete"` summary with run counts and
-completed stages, minus the knee. If the report step itself fails, the wrapper writes a minimal
-`summary.json` from what is on disk, so a result always exists.
+## 8. Not verified
 
-Infra queries live in `config/infra-queries.json` (operator-owned, because metric names belong to the
-cluster, not the test); the scenario's `grafana` block holds only the connection and toggles and
-points at it. Each query carries a `resource` group and an optional `breach_above` threshold; the file
-is hashed into `grafana.queries_sha256` so a result states which queries produced it. Clock skew is
-recorded at start and, above two seconds, warned about, since the query windows and annotation times
-come from the jump-host clock.
-
-```json
-{ "version": 1, "queries": [
-  { "id": "pg_conn_ratio", "resource": "postgres", "expr": "<PromQL>", "unit": "ratio", "breach_above": 0.85 }
-]}
-```
-
-## 4. Retention
-
-Manual for now. Each run writes a dated folder, `results/<YYYYMMDD-HHMMSS>-<id>/`, so old results are
-found and removed by date with ordinary tools (`ls`, `find -mtime`, `rm`). There is no automatic
-pruning, no policy file, and no size management in this version; if that becomes a burden we add a
-small scheduled cleanup later.
-
-The 12-hour limit is on Prometheus, not on the results: `summary.json` holds the infrastructure numbers
-captured at the end of the run, so they survive even though the live metrics do not. Since a run fits
-inside the window, the end-of-run pull always succeeds; only a report deferred past ~12 hours would
-find the live metrics gone. Grafana
-annotations are tagged `tfcap:<test-id>` and left in place (they are cheap and explain old dashboards);
-remove a run's with the delete call in Section 1. TFE's own data — whether deleting a workspace also
-clears its runs, logs, and state versions from Postgres and object storage — is the test's footprint,
-measured in the pilot (design doc §12) and recorded under `cleanup` in `summary.json`.
-
-[R] The jump host is scratch, not the system of record. Copy a run's folder (a few hundred KB) to
-somewhere the team owns when it matters — the run that set your safe concurrency, and the pilot
-baseline.
-
-## 5. Not verified
-
-- The service-account permission needed to create annotations on your Grafana edition.
-- The proxy and annotation paths on your version (legacy `/api` vs the Grafana 13 `/apis` migration).
-- Whether a tag-based dashboard annotation query renders regions as expected.
+- Which annotations endpoint your Grafana serves (legacy `/api/annotations` vs the resource API), and
+  the token permission for querying and for creating annotations.
+- The Prometheus fields of `POST /api/ds/query` (`expr`, `range`) on your version, and that panel
+  expressions work once variables and macros are replaced.
+- Whether a tag-based dashboard annotation query renders the stage regions as expected.
+- Whether the service-account token is shown only once.
+- The real size of `test.log` for a full ladder.
 
 ## Sources
 
-- [Grafana data source API — proxy `/api/datasources/proxy/uid/:uid/*`](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/data_source/)
+- [Grafana service accounts and tokens](https://grafana.com/docs/grafana/latest/administration/service-accounts/)
+- [Grafana data source query API — `POST /api/ds/query`](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/data_source/)
 - [Grafana annotations API — `POST /api/annotations`, region via `timeEnd`, epoch ms](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/annotations/)
+- [k6 `handleSummary` — the only file-writing hook, runs even on abort](https://grafana.com/docs/k6/latest/results-output/end-of-test/custom-summary/)
 - [Prometheus HTTP API — `query_range`](https://prometheus.io/docs/prometheus/latest/querying/api/)
 - Earlier k6 and TFE sources: the design document.
